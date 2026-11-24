@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Choirian</title>
+<link rel="stylesheet" href="/style.css">
+<script>
+(function () {
+  var hue = Math.floor(Math.random() * 360);
+  var turn = 24 + Math.floor(Math.random() * 48);
+  var root = document.documentElement;
+  root.dataset.hue = String(hue);
+  function h(s, l) { return 'hsl(' + hue + ' ' + s + '% ' + l + '%)'; }
+  root.style.setProperty('--room', h(26, 8));
+  root.style.setProperty('--paper', h(24, 91));
+  root.style.setProperty('--ink', h(30, 12));
+  root.style.setProperty('--text', h(20, 94));
+  root.style.setProperty('--muted', h(14, 76));
+  root.style.setProperty('--line', h(16, 32));
+  root.style.setProperty('--table', h(14, 84));
+  root.style.setProperty('--mark', 'hsl(' + ((hue + turn) % 360) + ' 62% 58%)');
+})();
+</script>
+</head>
+<body>
+<section id="home">
+  <canvas id="staff" aria-hidden="true"></canvas>
+  <h1 id="homeTitle" class="home-title">Choirian</h1>
+  <div class="bench">
+    <div id="historyDrop">
+      <div class="actions">
+        <label class="dropface">
+          <span class="dropword">新建</span>
+          <span class="dropnote">放入 PDF 或照片</span>
+          <input id="file" class="file-input" type="file" accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg" multiple>
+        </label>
+        <button type="button" id="libraryToggle" class="rail" aria-pressed="false">
+          <span class="dropword">查看已有</span>
+          <span class="dropnote">以前识别过的谱</span>
+        </button>
+      </div>
+      <div id="history" class="repertoire" inert></div>
+    </div>
+  </div>
+</section>
+<div id="work" hidden>
+<header>
+  <div class="mast">
+    <button type="button" id="back" class="quiet">返回</button>
+    <div class="titles">
+      <p class="brand">Choirian</p>
+      <h1 id="pieceName">打开一份扫描谱</h1>
+    </div>
+  </div>
+  <div class="header-actions">
+    <label class="pick">重新上传<input id="fileAgain" class="file-input" type="file" accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg" multiple></label>
+  </div>
+</header>
+<main>
+  <section class="score" aria-label="原谱">
+    <div class="stand">
+      <div class="pager">
+        <h2>原谱</h2>
+        <button type="button" id="prev" disabled>上一页</button>
+        <span id="pageLabel">还没有谱</span>
+        <button type="button" id="next" disabled>下一页</button>
+      </div>
+      <div id="stage" class="stage">
+        <p id="empty" class="empty">这一页还没有谱。</p>
+        <img id="page" alt="乐谱页面" hidden>
+      </div>
+    </div>
+  </section>
+  <section class="desk" aria-label="声部">
+    <div class="job">
+      <button type="button" id="recognize" disabled>识别并生成各声部</button>
+      <progress id="recognizeProgress" hidden aria-label="识别进度"></progress>
+      <p id="report" class="hint">优先用 homr 读扫描谱，读不出再换 Audiveris。</p>
+    </div>
+    <div class="player" id="player">
+      <h2>听</h2>
+      <div class="transport">
+        <button type="button" id="play" disabled>播放</button>
+        <button type="button" id="rewind" class="quiet" disabled>开头</button>
+        <span id="now">0:00</span>
+        <span id="total">0:00</span>
+        <label class="tempo">速度
+          <input id="tempo" type="number" min="48" max="168" value="72" step="1" inputmode="numeric" aria-label="速度">
+        </label>
+      </div>
+      <label class="seek">
+        <input id="seek" type="range" min="0" max="0" value="0" step="1" disabled aria-label="播放位置">
+      </label>
+      <div class="lanes" id="voices">
+        <div class="lane">
+          <button type="button" class="hear" data-hear="S" aria-pressed="true" disabled><span class="markline"></span><span class="vname">女高</span><span class="vcount" data-count="S">0 个音</span></button>
+          <button type="button" class="quiet" data-save="S" disabled>导出</button>
+        </div>
+        <div class="lane">
+          <button type="button" class="hear" data-hear="A" aria-pressed="true" disabled><span class="markline"></span><span class="vname">女低</span><span class="vcount" data-count="A">0 个音</span></button>
+          <button type="button" class="quiet" data-save="A" disabled>导出</button>
+        </div>
+        <div class="lane">
+          <button type="button" class="hear" data-hear="T" aria-pressed="true" disabled><span class="markline"></span><span class="vname">男高</span><span class="vcount" data-count="T">0 个音</span></button>
+          <button type="button" class="quiet" data-save="T" disabled>导出</button>
+        </div>
+        <div class="lane">
+          <button type="button" class="hear" data-hear="B" aria-pressed="true" disabled><span class="markline"></span><span class="vname">男低</span><span class="vcount" data-count="B">0 个音</span></button>
+          <button type="button" class="quiet" data-save="B" disabled>导出</button>
+        </div>
+        <div class="lane">
+          <button type="button" class="hear" data-hear="P" aria-pressed="true" disabled><span class="markline"></span><span class="vname">钢琴</span><span class="vcount" data-count="P">0 个音</span></button>
+          <button type="button" class="quiet" data-save="P" disabled>导出</button>
+        </div>
+      </div>
+      <p id="playerNote" class="hint">识别之后，点声部名字把它从合奏里拿掉。空格键播放或暂停。</p>
+      <div class="sheet-tools">
+        <button type="button" id="exportScore" class="quiet" disabled>导出电子谱</button>
+        <label class="pick">导入改过的谱<input id="importScore" class="file-input" type="file" accept=".xml,.musicxml,.mxl,application/vnd.recordare.musicxml+xml"></label>
+        <button type="button" id="exportAll" class="quiet" disabled>导出全部</button>
+      </div>
+    </div>
+  </section>
+</main>
+</div>
+<p id="status" role="status">新建一份谱，或查看已经识别过的。</p>
+<script src="/app.js"></script>
+</body>
+</html>
