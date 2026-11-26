@@ -1,6 +1,7 @@
 .venv/
 .venv-homr/
 data/
+dist/
 __pycache__/
 .cursor/
 .stitch/

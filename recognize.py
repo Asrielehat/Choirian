@@ -1097,9 +1097,11 @@ def prefer_main_score(parsed_list):
 
 
 def homr_python():
+    root = Path(__file__).resolve().parent
     candidates = [
         os.environ.get("HOMR_PYTHON", ""),
-        str(Path(__file__).resolve().parent / ".venv-homr" / "Scripts" / "python.exe"),
+        str(root / "runtime" / "python.exe"),
+        str(root / ".venv-homr" / "Scripts" / "python.exe"),
     ]
     for candidate in candidates:
         if candidate and Path(candidate).is_file():
@@ -1107,11 +1109,22 @@ def homr_python():
     return None
 
 
+def homr_site(python):
+    python = Path(python).resolve()
+    sites = [python.parent / "Lib" / "site-packages" / "homr"]
+    if len(python.parents) > 1:
+        sites.append(python.parents[1] / "Lib" / "site-packages" / "homr")
+    for site in sites:
+        if site.is_dir():
+            return site
+    return sites[0]
+
+
 def homr_ready():
     python = homr_python()
     if python is None:
         return False
-    site = python.resolve().parents[1] / "Lib" / "site-packages" / "homr"
+    site = homr_site(python)
 
     def ready(paths):
         return any(path.is_file() and "fp16" not in path.name and path.stat().st_size > 1_000_000 for path in paths)
