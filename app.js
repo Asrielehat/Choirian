@@ -1,8 +1,9 @@
 'use strict';
 
 const $ = id => document.getElementById(id);
-const voices = ['S', 'A', 'T', 'B', 'P'];
-const voiceNames = {S:'女高', A:'女低', T:'男高', B:'男低', P:'钢琴'};
+const voices = ['S', 'S2', 'A', 'A2', 'T', 'T2', 'B', 'B2', 'P'];
+const voiceNames = {S:'女高', S2:'女高二', A:'女低', A2:'女低二', T:'男高', T2:'男高二', B:'男低', B2:'男低二', P:'钢琴'};
+const divisiPartner = {S:'S2', A:'A2', T:'T2', B:'B2'};
 let piece = null;
 let page = 1;
 let pollTimer = null;
@@ -12,9 +13,15 @@ let context = null;
 let buffers = {};
 let gains = {};
 let sources = [];
-let heard = {S:true, A:true, T:true, B:true, P:true};
+let heard = {S:true, S2:true, A:true, A2:true, T:true, T2:true, B:true, B2:true, P:true};
+let solos = new Set();
+let ensemble = null;
 let playing = false;
 let listenBpm = 72;
+let renderedBpm = 0;
+let heldBeat = 0;
+let prepareJob = null;
+let preparing = false;
 let recognizing = false;
 let tempoTimer = 0;
 let resumeAfterTempo = false;
@@ -37,17 +44,31 @@ async function api(path, options = {}) {
 
 function showPage() {
   if (!piece) return;
+  const total = Math.max(1, Number(piece.pages) || 1);
+  page = Math.min(Math.max(1, page), total);
   $('empty').hidden = true;
-  $('page').hidden = false;
-  const src = `/api/pieces/${piece.id}/pages/${page}`;
-  if ($('page').getAttribute('src') !== src) $('page').src = src;
-  $('pageLabel').textContent = `${page} / ${piece.pages}`;
-  $('prev').disabled = page === 1;
-  $('next').disabled = page === piece.pages;
+  const image = $('page');
+  image.hidden = false;
+  const mark = `${piece.id}:${page}`;
+  if (image.dataset.page !== mark) {
+    image.dataset.page = mark;
+    image.src = `/api/pieces/${piece.id}/pages/${page}`;
+    $('stage').scrollTop = 0;
+  }
+  $('pageLabel').textContent = `${page} / ${total}`;
+  $('prev').disabled = page <= 1;
+  $('next').disabled = page >= total;
 }
 
 function noteCount(voice, source = piece) {
   return (source?.voices?.[voice] || []).length;
+}
+
+function displayName(voice, counts) {
+  const partner = divisiPartner[voice];
+  const second = counts ? Number(counts[partner] || 0) : noteCount(partner);
+  if (partner && second) return `${voiceNames[voice]}一`;
+  return voiceNames[voice];
 }
 
 function tidy(text) {
@@ -89,16 +110,31 @@ function stopSources() {
 
 function dropAudio() {
   cancelAnimationFrame(raf);
+  clearTimeout(tempoTimer);
   stopSources();
   buffers = {};
   playing = false;
   offset = 0;
   dragging = false;
+  renderedBpm = 0;
+  heldBeat = 0;
+  resumeAfterTempo = false;
+  preparing = false;
   loadToken += 1;
 }
 
+function syncBeat() {
+  const seconds = playing ? position() : offset;
+  const clock = playing ? (renderedBpm || listenBpm || 72) : (listenBpm || 72);
+  heldBeat = seconds * clock / 60;
+}
+
+function inMix(voice) {
+  return solos.size ? solos.has(voice) : !!heard[voice];
+}
+
 function level() {
-  const active = voices.filter(voice => heard[voice] && buffers[voice]).length;
+  const active = voices.filter(voice => inMix(voice) && buffers[voice]).length;
   return active <= 1 ? 0.9 : 0.42;
 }
 
@@ -107,7 +143,7 @@ function applyGains() {
   const amount = level();
   for (const voice of voices) {
     if (!gains[voice]) continue;
-    gains[voice].gain.setTargetAtTime(heard[voice] ? amount : 0, context.currentTime, 0.02);
+    gains[voice].gain.setTargetAtTime(inMix(voice) ? amount : 0, context.currentTime, 0.02);
   }
 }
 
@@ -120,7 +156,8 @@ function paintTransport() {
   const total = duration();
   const time = Math.min(position(), total);
   const ready = total > 0;
-  $('play').disabled = !ready;
+  const anyNotes = voices.some(voice => noteCount(voice));
+  $('play').disabled = !anyNotes;
   $('play').textContent = playing ? '暂停' : '播放';
   $('play').classList.toggle('on', playing);
   $('rewind').disabled = !ready;
@@ -129,10 +166,15 @@ function paintTransport() {
   if (!dragging) $('seek').value = String(playing ? time : offset);
   $('now').textContent = clock(playing && !dragging ? time : offset);
   $('total').textContent = clock(total);
-  const any = voices.some(voice => noteCount(voice));
-  $('playerNote').textContent = any
-    ? '声部和钢琴合在一起放。点名字可以拿掉，空格键播放或暂停。'
-    : '识别之后，声部和钢琴可以合在一起听。点名字就把它从合奏里拿掉。';
+  if (preparing) {
+    $('playerNote').textContent = renderedBpm && renderedBpm !== listenBpm
+      ? '正在按新速度准备…'
+      : '正在准备音频…';
+    return;
+  }
+  $('playerNote').textContent = anyNotes
+    ? '声部合在一起放。休拿掉一条，独可以同时点多条。空格键播放或暂停。'
+    : '识别之后，休把一条拿掉，独可以同时点多条。空格键播放或暂停。';
 }
 
 function tick() {
@@ -142,6 +184,7 @@ function tick() {
     stopSources();
     playing = false;
     offset = 0;
+    heldBeat = 0;
     paintTransport();
     return;
   }
@@ -165,7 +208,7 @@ function playFrom(seconds) {
     const gain = ctx.createGain();
     source.buffer = buffer;
     source.playbackRate.value = 1;
-    gain.gain.value = heard[voice] ? amount : 0;
+    gain.gain.value = inMix(voice) ? amount : 0;
     source.connect(gain).connect(ctx.destination);
     source.start(0, offset);
     gains[voice] = gain;
@@ -182,38 +225,74 @@ function playFrom(seconds) {
 }
 
 async function togglePlay() {
-  if (!duration() && piece) await prepareAudio();
-  if (!duration()) return;
-  const ctx = ensureContext();
-  if (ctx.state === 'suspended') await ctx.resume();
-  if (playing) {
+  if (!piece || !voices.some(voice => noteCount(voice))) return;
+  if (playing && renderedBpm === listenBpm) {
     offset = position();
+    syncBeat();
     stopSources();
     playing = false;
+    resumeAfterTempo = false;
     paintTransport();
     return;
   }
+  if (!duration() || renderedBpm !== listenBpm) {
+    resumeAfterTempo = true;
+    await prepareAudio();
+    return;
+  }
+  const ctx = ensureContext();
+  if (ctx.state === 'suspended') await ctx.resume();
   playFrom(offset);
 }
 
 async function prepareAudio() {
   if (!piece || !voices.some(voice => noteCount(voice))) {
+    preparing = false;
     paintTransport();
     return;
   }
+  if (prepareJob && prepareJob.bpm === listenBpm) return prepareJob.promise;
   const token = ++loadToken;
+  const bpm = listenBpm;
   const id = piece.id;
-  $('playerNote').textContent = '正在准备音频…';
-  const next = {};
-  await Promise.all(voices.map(async voice => {
-    if (!noteCount(voice)) return;
-    const response = await fetch(`/api/pieces/${id}/voices/${voice}.wav?bpm=${listenBpm}`);
-    if (!response.ok) return;
-    next[voice] = await ensureContext().decodeAudioData(await response.arrayBuffer());
-  }));
-  if (token !== loadToken || piece?.id !== id) return;
-  buffers = next;
+  preparing = true;
   paintTransport();
+  const promise = (async () => {
+    const next = {};
+    await Promise.all(voices.map(async voice => {
+      if (!noteCount(voice)) return;
+      const response = await fetch(`/api/pieces/${id}/voices/${voice}.wav?bpm=${bpm}`);
+      if (!response.ok) throw new Error('音频没有准备好');
+      next[voice] = await ensureContext().decodeAudioData(await response.arrayBuffer());
+    }));
+    if (token !== loadToken || piece?.id !== id || listenBpm !== bpm) return;
+    buffers = next;
+    renderedBpm = bpm;
+    offset = Math.max(0, heldBeat) * 60 / bpm;
+    preparing = false;
+    if (resumeAfterTempo) {
+      resumeAfterTempo = false;
+      const ctx = ensureContext();
+      if (ctx.state === 'suspended') await ctx.resume();
+      playFrom(offset);
+    } else {
+      paintTransport();
+    }
+  })();
+  const job = {bpm, promise};
+  prepareJob = job;
+  try {
+    await promise;
+  } catch (error) {
+    if (token === loadToken) {
+      preparing = false;
+      resumeAfterTempo = false;
+      paintTransport();
+    }
+    throw error;
+  } finally {
+    if (prepareJob === job) prepareJob = null;
+  }
 }
 
 function renderVoices() {
@@ -234,11 +313,20 @@ function renderVoices() {
   $('report').textContent = tidy(piece?.job?.message || piece?.report || '优先用 homr 读扫描谱，读不出再换 Audiveris。');
   for (const voice of voices) {
     const count = noteCount(voice);
-    document.querySelector(`[data-count="${voice}"]`).textContent = `${count} 个音`;
     const hear = document.querySelector(`[data-hear="${voice}"]`);
     const save = document.querySelector(`[data-save="${voice}"]`);
+    const lane = hear.closest('.lane');
+    if (voice.endsWith('2')) lane.hidden = !count;
+    hear.querySelector('.vname').textContent = displayName(voice);
+    document.querySelector(`[data-count="${voice}"]`).textContent = `${count} 个音`;
     hear.disabled = !count;
-    hear.setAttribute('aria-pressed', count && heard[voice] ? 'true' : 'false');
+    hear.setAttribute('aria-pressed', count && inMix(voice) ? 'true' : 'false');
+    const rest = document.querySelector(`[data-rest="${voice}"]`);
+    const alone = document.querySelector(`[data-solo="${voice}"]`);
+    rest.disabled = !count;
+    alone.disabled = !count;
+    rest.setAttribute('aria-pressed', count && !inMix(voice) ? 'true' : 'false');
+    alone.setAttribute('aria-pressed', solos.has(voice) ? 'true' : 'false');
     save.disabled = !count;
   }
   const silent = !piece || !voices.some(voice => noteCount(voice));
@@ -258,9 +346,9 @@ function renderHistory(rows) {
   }
   $('history').innerHTML = rows.map(row => {
     const counts = row.counts || {};
-    const bits = voices.filter(voice => counts[voice]).map(voice => `${voiceNames[voice]} ${counts[voice]}`);
+    const bits = voices.filter(voice => counts[voice]).map(voice => `${displayName(voice, counts)} ${counts[voice]}`);
     const detail = `${row.pages} 页${bits.length ? '，' + bits.join('，') : ''}`;
-    return `<button type="button" class="past" data-open="${row.id}"><strong>${escapeText(row.name)}</strong><span>${detail}</span></button>`;
+    return `<div class="past"><button type="button" class="past-open" data-open="${row.id}"><strong>${escapeText(row.name)}</strong><span>${detail}</span></button><button type="button" class="quiet past-delete" data-delete="${row.id}">删除</button></div>`;
   }).join('');
 }
 
@@ -299,6 +387,9 @@ function setPiece(next) {
   if (switched) {
     listenBpm = clampTempo(next.bpm || 72);
     $('tempo').value = String(listenBpm);
+    heard = {S:true, S2:true, A:true, A2:true, T:true, T2:true, B:true, B2:true, P:true};
+    solos = new Set();
+    ensemble = null;
   }
   page = Math.min(Math.max(page, 1), next.pages);
   recognizing = next.job?.status === 'running';
@@ -367,6 +458,18 @@ $('fileAgain').onchange = async () => {
 $('back').onclick = () => { showHome(); refreshLibrary().catch(error => status(error.message, true)); };
 $('libraryToggle').onclick = () => showLibrary(!$('home').classList.contains('library'));
 $('history').onclick = async event => {
+  const remove = event.target.closest('[data-delete]');
+  if (remove) {
+    const name = remove.closest('.past')?.querySelector('strong')?.textContent || '这份谱';
+    if (!window.confirm(`删除「${name}」？谱和识别结果会一起去掉。`)) return;
+    try {
+      await api(`/api/pieces/${remove.dataset.delete}`, {method:'DELETE'});
+      if (piece?.id === remove.dataset.delete) showHome();
+      await refreshLibrary();
+      status('已删除。');
+    } catch (error) { status(error.message, true); }
+    return;
+  }
   const button = event.target.closest('[data-open]');
   if (!button) return;
   try { page = 1; setPiece(await api(`/api/pieces/${button.dataset.open}`)); status('已打开。'); }
@@ -420,45 +523,59 @@ $('recognize').onclick = async () => {
 };
 $('play').onclick = () => togglePlay().catch(error => status(error.message, true));
 $('rewind').onclick = () => {
+  heldBeat = 0;
   offset = 0;
-  if (playing) playFrom(0);
+  if (playing && renderedBpm === listenBpm) playFrom(0);
   else paintTransport();
 };
 function clampTempo(value) {
   const bpm = Math.round(Number(value));
   if (!Number.isFinite(bpm)) return 72;
-  return Math.min(168, Math.max(48, bpm));
+  return Math.min(168, Math.max(24, bpm));
 }
 
 function scheduleTempo(bpm) {
   if (bpm === listenBpm) return;
-  const previous = listenBpm || piece?.bpm || 72;
-  const beats = position() * previous / 60;
-  if (playing) resumeAfterTempo = true;
+  syncBeat();
+  const keep = playing || resumeAfterTempo;
   listenBpm = bpm;
-  offset = Number.isFinite(beats) ? beats * 60 / bpm : 0;
-  stopSources();
-  playing = false;
-  cancelAnimationFrame(raf);
-  paintTransport();
+  offset = heldBeat * 60 / bpm;
+  if (playing) {
+    stopSources();
+    playing = false;
+    cancelAnimationFrame(raf);
+  }
+  resumeAfterTempo = keep;
   clearTimeout(tempoTimer);
+  if (renderedBpm === bpm && duration()) {
+    preparing = false;
+    loadToken += 1;
+    if (resumeAfterTempo) {
+      resumeAfterTempo = false;
+      const ctx = ensureContext();
+      const start = () => playFrom(offset);
+      if (ctx.state === 'suspended') ctx.resume().then(start).catch(error => status(error.message, true));
+      else start();
+    } else paintTransport();
+    return;
+  }
+  preparing = true;
+  paintTransport();
+  loadToken += 1;
   if (!piece || !voices.some(voice => noteCount(voice))) {
     resumeAfterTempo = false;
+    preparing = false;
+    paintTransport();
     return;
   }
   tempoTimer = setTimeout(() => {
-    const resume = resumeAfterTempo;
-    resumeAfterTempo = false;
-    prepareAudio().then(() => {
-      if (resume) playFrom(offset);
-      else paintTransport();
-    }).catch(error => status(error.message, true));
+    prepareAudio().catch(error => status(error.message, true));
   }, 400);
 }
 
 $('tempo').addEventListener('input', () => {
   const bpm = Number($('tempo').value);
-  if (!Number.isFinite(bpm) || bpm < 48 || bpm > 168) return;
+  if (!Number.isFinite(bpm) || bpm < 24 || bpm > 168) return;
   scheduleTempo(bpm);
 });
 $('tempo').addEventListener('change', () => {
@@ -474,24 +591,60 @@ $('seek').addEventListener('input', () => {
 $('seek').addEventListener('change', () => {
   dragging = false;
   offset = Number($('seek').value);
-  if (playing) playFrom(offset);
+  if (renderedBpm && renderedBpm === listenBpm) heldBeat = offset * renderedBpm / 60;
+  if (playing && renderedBpm === listenBpm) playFrom(offset);
   else paintTransport();
 });
+function soloLabel() {
+  return voices.filter(voice => solos.has(voice)).map(displayName).join('、');
+}
+
+function restVoice(voice) {
+  if (solos.has(voice)) {
+    solos.delete(voice);
+    if (!solos.size) {
+      heard = {...ensemble};
+      ensemble = null;
+      heard[voice] = false;
+    }
+  } else if (solos.size) ensemble[voice] = !ensemble[voice];
+  else heard[voice] = !heard[voice];
+  applyGains();
+  renderVoices();
+  const name = displayName(voice);
+  status(inMix(voice) ? `${name}回到合奏。` : `${name}休止。`);
+}
+
+function soloVoice(voice) {
+  if (!solos.size) ensemble = {...heard};
+  if (solos.has(voice)) {
+    solos.delete(voice);
+    if (!solos.size) {
+      heard = {...ensemble};
+      ensemble = null;
+      status('回到合奏。');
+    } else status(`只听${soloLabel()}。`);
+  } else {
+    solos.add(voice);
+    status(`只听${soloLabel()}。`);
+  }
+  applyGains();
+  renderVoices();
+}
+
 $('voices').onclick = async event => {
+  const rest = event.target.closest('[data-rest]');
+  const alone = event.target.closest('[data-solo]');
   const hear = event.target.closest('[data-hear]');
   const save = event.target.closest('[data-save]');
   try {
-    if (hear && !hear.disabled) {
-      const voice = hear.dataset.hear;
-      heard[voice] = !heard[voice];
-      hear.setAttribute('aria-pressed', heard[voice] ? 'true' : 'false');
-      applyGains();
-      status(heard[voice] ? `${voiceNames[voice]}在合奏里。` : `${voiceNames[voice]}已拿掉。`);
-    }
+    if (rest && !rest.disabled) restVoice(rest.dataset.rest);
+    else if (alone && !alone.disabled) soloVoice(alone.dataset.solo);
+    else if (hear && !hear.disabled) restVoice(hear.dataset.hear);
     if (save) {
       const voice = save.dataset.save;
-      await download(`/api/pieces/${piece.id}/voices/${voice}.wav`, `${voice}-${voiceNames[voice]}.wav`);
-      status(`${voiceNames[voice]}已导出。`);
+      await download(`/api/pieces/${piece.id}/voices/${voice}.wav?bpm=${listenBpm}`, `${voice}-${displayName(voice)}.wav`);
+      status(`${displayName(voice)}已导出。`);
     }
   } catch (error) { status(error.message, true); }
 };
@@ -524,7 +677,7 @@ $('importScore').onchange = async () => {
 };
 $('exportAll').onclick = async () => {
   try {
-    await download(`/api/pieces/${piece.id}/parts.zip`, 'fenbu-parts.zip');
+    await download(`/api/pieces/${piece.id}/parts.zip?bpm=${listenBpm}`, 'fenbu-parts.zip');
     status('各声部已打包。');
   } catch (error) { status(error.message, true); }
 };

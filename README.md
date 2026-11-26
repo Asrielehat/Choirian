@@ -1,8 +1,14 @@
 # Choirian
 
-导入扫描的合唱 PDF 或照片，自动识别音符和节奏，生成女高、女低、男高、男低四条钢琴 WAV。
+导入扫描的合唱 PDF 或照片，识别音符和节奏，按女高、女低、男高、男低生成钢琴 WAV。同一声部出现两个音时分成一声部和二声部；没分开的段落，两个声部一起唱。男高按实际音高低一个八度。谱里有钢琴时也会单独导出。
 
-识别优先用开源项目 [homr](https://github.com/liebharc/homr)（AGPL-3.0）。它按页读图片，专门处理拍照和扫描谱。homr 读不出整份谱时，改用 Audiveris。Audiveris 若导出多个乐章，会留下音符最多的那一份，避免残缺乐章盖掉正谱。
+识别使用开源项目 [homr](https://github.com/liebharc/homr)（AGPL-3.0）。它按页读图片，专门处理拍照和扫描谱。
+
+## 听和导出
+
+- 速度可以改到 24–168。播放和导出都按当前速度，音高不变。
+- 「休」拿掉一条声部。「独」可以同时点亮多条，全部点掉后回到原来的合奏。
+- 可以导出单个声部、全部声部，以及一份 MusicXML。改过的 MusicXML 可以再导回来出声。
 
 ## 启动
 
@@ -25,8 +31,6 @@ homr 需要单独的 Python 3.12 环境。双击 `setup-homr.bat`，或：
 ```
 
 模型只下载一次，来自 homr 的 GitHub Release。官方下载器的读超时很短，国内网络容易中断，所以用 `_fetch_homr_models.py` 分段续传。想改用别的解释器时，把路径写到环境变量 `HOMR_PYTHON`。
-
-Audiveris 作为后备。默认查找 `AUDIVERIS_CMD`，其次是项目里的 `tools/Audiveris/Audiveris.exe`，再其次是同级 ChoirLab 里的那一份。
 
 支持未加密 PDF（最多 40 页、80 MB），以及 PNG / JPEG。曲目保存在 `data/`。
 

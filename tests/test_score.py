@@ -44,6 +44,10 @@ class ScoreTests(unittest.TestCase):
         piece["voices"]["S"] = notes
         archive = zipfile.ZipFile(io.BytesIO(score.render_zip(piece)))
         self.assertEqual(archive.namelist(), ["S-女高.wav"])
+        piece["voices"]["S2"] = [{"start": 0, "duration": 1, "pitch": 67}]
+        divided = zipfile.ZipFile(io.BytesIO(score.render_zip(piece)))
+        self.assertEqual(divided.namelist(), ["S-女高一.wav", "S2-女高二.wav"])
+        self.assertTrue(divided.read("S2-女高二.wav").startswith(b"RIFF"))
 
     def test_a_faster_tempo_shortens_the_note_and_keeps_the_pitch(self):
         note = [{"start": 0, "duration": 1, "pitch": 69}]
@@ -57,8 +61,32 @@ class ScoreTests(unittest.TestCase):
         self.assertLess(len(fast), len(slow))
         self.assertEqual(fast[:1000], slow[:1000])
 
+    def test_tempo_thirty_stays_and_the_pitch_does_not_change(self):
+        piece = score.new_piece("d" * 32, "慢.musicxml", 1)
+        score.apply_recognition(piece, {"S": [{"start": 0, "duration": 1, "pitch": 60}]}, 30, 4, "")
+        self.assertEqual(piece["bpm"], 30)
+        note = [{"start": 0, "duration": 1, "pitch": 69}, {"start": 1, "duration": 1, "pitch": 71}]
+        slow = wave.open(io.BytesIO(score.render_wav(note, 30)))
+        fast = wave.open(io.BytesIO(score.render_wav(note, 72)))
+        self.assertGreater(slow.getnframes(), fast.getnframes())
+        self.assertEqual(slow.readframes(1000), fast.readframes(1000))
+        piece["voices"]["S"] = note
+        slow_zip = zipfile.ZipFile(io.BytesIO(score.render_zip(piece, 30)))
+        fast_zip = zipfile.ZipFile(io.BytesIO(score.render_zip(piece, 72)))
+        self.assertGreater(len(slow_zip.read("S-女高.wav")), len(fast_zip.read("S-女高.wav")))
+
 
 class RecognizeTests(unittest.TestCase):
+    def test_a_written_tempo_of_thirty_is_kept(self):
+        path = Path(tempfile.mkdtemp()) / "slow.musicxml"
+        path.write_text(
+            "<score-partwise><part-list><score-part id=\"P1\"><part-name>Soprano</part-name></score-part></part-list>"
+            "<part id=\"P1\"><measure number=\"1\"><attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type></time></attributes>"
+            "<direction><sound tempo=\"30\"/></direction><note><pitch><step>C</step><octave>4</octave></pitch><duration>1</duration></note></measure></part></score-partwise>",
+            encoding="utf-8",
+        )
+        self.assertEqual(recognize.read_score(path)["bpm"], 30)
+
     def test_four_unnamed_parts_become_satb(self):
         path = Path(tempfile.mkdtemp()) / "score.musicxml"
         path.write_text(SATB, encoding="utf-8")
@@ -126,6 +154,7 @@ class RecognizeTests(unittest.TestCase):
         ])
         self.assertEqual(piano_only["S"], [])
         self.assertEqual([note["pitch"] for note in piano_only["P"]], [48, 64])
+        self.assertEqual(piano_only["S2"], [])
         self.assertEqual(piano_extra, "")
         joined, bpm, beats, warning = recognize.join_scores([
             {"bpm": 80, "beats_per_bar": 4, "lines": [{"name": "Soprano", "notes": [{"start": 0, "duration": 4, "pitch": 72}]}]},
@@ -290,6 +319,74 @@ class MeterTests(unittest.TestCase):
         self.assertEqual([note["duration"] for note in voices["B"][:4]], [4.5, 0.5, 0.5, 0.5])
         self.assertEqual(voices["B"][4]["start"], 6)
 
+    def test_a_high_f_that_shares_its_beat_stays_where_it_was_written(self):
+        voices, _ = recognize.assign_voices([
+            {"name": "Soprano", "clef": "G", "layer": 0, "notes": [
+                {"start": 1, "duration": 1, "pitch": 67},
+                {"start": 2, "duration": 1, "pitch": 65},
+                {"start": 3, "duration": 1, "pitch": 64},
+            ]},
+            {"name": "Tenor", "clef": "G", "layer": 0, "notes": [
+                {"start": 0, "duration": 1, "pitch": 67},
+                {"start": 1, "duration": 1, "pitch": 65},
+                {"start": 1, "duration": 1, "pitch": 77},
+                {"start": 2, "duration": 1, "pitch": 64},
+            ]},
+        ])
+        self.assertEqual([note["start"] for note in voices["T"]], [0, 1, 2])
+        self.assertEqual(voices["T"][1]["pitch"], 65)
+        self.assertEqual([note["pitch"] for note in voices["T2"] if note["start"] == 1], [53])
+
+    def test_a_high_f_written_on_the_upper_layer_stays_on_that_beat(self):
+        voices, _ = recognize.assign_voices([
+            {"name": "Soprano", "clef": "G", "layer": 0, "notes": [
+                {"start": 1, "duration": 1, "pitch": 67},
+                {"start": 2, "duration": 1, "pitch": 65},
+                {"start": 3, "duration": 1, "pitch": 64},
+            ]},
+            {"name": "Tenor", "clef": "G", "layer": 0, "notes": [
+                {"start": 0, "duration": 1, "pitch": 67},
+                {"start": 1, "duration": 1, "pitch": 77},
+                {"start": 2, "duration": 1, "pitch": 64},
+            ]},
+            {"name": "Tenor", "clef": "G", "layer": 1, "notes": [
+                {"start": 1, "duration": 1, "pitch": 65},
+            ]},
+        ])
+        self.assertEqual([note["start"] for note in voices["T"]], [0, 1, 2])
+        self.assertEqual(voices["T"][1]["pitch"], 65)
+        self.assertEqual([note["pitch"] for note in voices["T2"] if abs(note["start"] - 1) < 0.02], [53])
+
+    def test_the_top_line_f_stays_on_the_tenor_stem(self):
+        folder = Path(tempfile.mkdtemp())
+        path = folder / "tenor-f.musicxml"
+        path.write_text("""<score-partwise><part-list>
+<score-part id="P1"><part-name>Tenor</part-name></score-part>
+</part-list>
+<part id="P1"><measure number="1"><attributes><divisions>2</divisions><clef><sign>G</sign></clef></attributes>
+<note><pitch><step>C</step><octave>5</octave></pitch><duration>1</duration><type>eighth</type></note>
+<note><pitch><step>F</step><octave>4</octave></pitch><duration>1</duration><type>eighth</type></note>
+<note><pitch><step>G</step><octave>4</octave></pitch><duration>1</duration><type>eighth</type></note>
+<note><pitch><step>F</step><octave>4</octave></pitch><duration>1</duration><type>eighth</type></note>
+<note><chord/><pitch><step>C</step><octave>5</octave></pitch><duration>1</duration><type>eighth</type></note>
+<note><pitch><step>G</step><octave>4</octave></pitch><duration>1</duration><type>eighth</type></note>
+<note><chord/><pitch><step>D</step><octave>5</octave></pitch><duration>1</duration><type>eighth</type></note>
+<note><pitch><step>F</step><octave>5</octave></pitch><duration>1</duration><type>eighth</type></note>
+<note><chord/><pitch><step>F</step><octave>4</octave></pitch><duration>1</duration><type>eighth</type></note>
+</measure>
+<measure number="2">
+<note><pitch><step>G</step><octave>4</octave></pitch><duration>3</duration><type>quarter</type></note>
+<note><chord/><pitch><step>E</step><octave>5</octave></pitch><duration>3</duration><type>quarter</type></note>
+<note><pitch><step>G</step><octave>4</octave></pitch><duration>3</duration><type>quarter</type></note>
+<note><chord/><pitch><step>C</step><octave>5</octave></pitch><duration>3</duration><type>quarter</type></note>
+</measure></part></score-partwise>""", encoding="utf-8")
+        voices, _ = recognize.assign_voices(recognize.read_score(path)["lines"])
+        self.assertEqual(
+            [(note["start"], note["pitch"]) for note in voices["T"]],
+            [(0.0, 60), (0.5, 53), (1.0, 55), (1.5, 53), (2.0, 55), (2.5, 65), (3.0, 55), (4.5, 55)],
+        )
+        self.assertEqual([note["pitch"] for note in voices["T2"] if note["start"] == 2.5], [53])
+
     def test_chord_on_a_shared_staff_splits_into_the_two_singers(self):
         folder = Path(tempfile.mkdtemp())
         path = folder / "chord.musicxml"
@@ -322,6 +419,8 @@ class MeterTests(unittest.TestCase):
         self.assertEqual([note["pitch"] for note in voices["T"]], [59, 57])
         self.assertEqual([note["pitch"] for note in voices["B"]], [52, 48])
         self.assertEqual(sorted(note["pitch"] for note in voices["P"]), [60, 62, 64, 65, 67, 69])
+        self.assertEqual(voices["S2"], [])
+        self.assertEqual(voices["A2"], [])
 
     def test_four_staves_keep_their_own_singers_when_one_staff_has_a_chord(self):
         folder = Path(tempfile.mkdtemp())
@@ -349,8 +448,9 @@ class MeterTests(unittest.TestCase):
 </score-partwise>""", encoding="utf-8")
         voices, extra = recognize.assign_voices(recognize.read_score(path)["lines"])
         self.assertEqual([note["pitch"] for note in voices["S"]], [72, 74])
+        self.assertEqual([note["pitch"] for note in voices["S2"]], [64, 65])
         self.assertEqual([note["pitch"] for note in voices["A"]], [69, 71])
-        self.assertEqual([note["pitch"] for note in voices["T"]], [67, 69])
+        self.assertEqual([note["pitch"] for note in voices["T"]], [55, 57])
         self.assertEqual([note["pitch"] for note in voices["B"]], [48, 50])
         self.assertNotIn("还有", extra)
 
@@ -476,6 +576,161 @@ class MeterTests(unittest.TestCase):
         self.assertEqual([round(note["start"], 4) for note in notes], [0, 0.5, 1])
 
 
+class DivisiTests(unittest.TestCase):
+    def test_one_chord_and_a_three_note_stack_stay_inside_the_part(self):
+        folder = Path(tempfile.mkdtemp())
+        once = folder / "once.musicxml"
+        once.write_text("""<score-partwise><part-list>
+<score-part id="P1"><part-name>Voice</part-name></score-part>
+<score-part id="P2"><part-name>Voice</part-name></score-part>
+<score-part id="P3"><part-name>Voice</part-name></score-part>
+<score-part id="P4"><part-name>Voice</part-name></score-part>
+</part-list>
+<part id="P1"><measure number="1"><attributes><divisions>1</divisions><clef><sign>G</sign></clef></attributes>
+<note><pitch><step>C</step><octave>5</octave></pitch><duration>4</duration></note>
+<note><chord/><pitch><step>E</step><octave>4</octave></pitch><duration>4</duration></note></measure>
+<measure number="2"><note><pitch><step>D</step><octave>5</octave></pitch><duration>4</duration></note></measure></part>
+<part id="P2"><measure number="1"><attributes><divisions>1</divisions><clef><sign>G</sign></clef></attributes>
+<note><pitch><step>A</step><octave>4</octave></pitch><duration>4</duration></note></measure>
+<measure number="2"><note><pitch><step>B</step><octave>4</octave></pitch><duration>4</duration></note></measure></part>
+<part id="P3"><measure number="1"><attributes><divisions>1</divisions><clef><sign>G</sign></clef></attributes>
+<note><pitch><step>G</step><octave>4</octave></pitch><duration>4</duration></note></measure>
+<measure number="2"><note><pitch><step>A</step><octave>4</octave></pitch><duration>4</duration></note></measure></part>
+<part id="P4"><measure number="1"><attributes><divisions>1</divisions><clef><sign>F</sign></clef></attributes>
+<note><pitch><step>C</step><octave>3</octave></pitch><duration>4</duration></note></measure>
+<measure number="2"><note><pitch><step>D</step><octave>3</octave></pitch><duration>4</duration></note></measure></part>
+</score-partwise>""", encoding="utf-8")
+        once_voices, extra = recognize.assign_voices(recognize.read_score(once)["lines"])
+        self.assertEqual([note["pitch"] for note in once_voices["S"]], [72, 74])
+        self.assertEqual([note["pitch"] for note in once_voices["S2"]], [64, 74])
+        self.assertEqual([note["pitch"] for note in once_voices["A"]], [69, 71])
+        self.assertNotIn("还有", extra)
+        stack = folder / "stack.musicxml"
+        stack.write_text("""<score-partwise><part-list>
+<score-part id="P1"><part-name>Soprano</part-name></score-part>
+</part-list>
+<part id="P1"><measure number="1"><attributes><divisions>1</divisions><clef><sign>G</sign></clef></attributes>
+<note><pitch><step>C</step><octave>5</octave></pitch><duration>4</duration></note>
+<note><chord/><pitch><step>G</step><octave>4</octave></pitch><duration>4</duration></note>
+<note><chord/><pitch><step>E</step><octave>4</octave></pitch><duration>4</duration></note>
+<note><pitch><step>D</step><octave>5</octave></pitch><duration>4</duration></note></measure></part>
+</score-partwise>""", encoding="utf-8")
+        stack_voices, _ = recognize.assign_voices(recognize.read_score(stack)["lines"])
+        self.assertEqual([note["pitch"] for note in stack_voices["S"]], [72, 74])
+        self.assertEqual([note["pitch"] for note in stack_voices["S2"]], [64, 67, 74])
+        self.assertGreater(len(score.render_wav(stack_voices["S2"], 72)), 44)
+        self.assertEqual(stack_voices["A"], [])
+
+    def test_a_written_second_voice_and_its_name_stay_with_the_part(self):
+        folder = Path(tempfile.mkdtemp())
+        named = folder / "named.musicxml"
+        named.write_text("""<score-partwise><part-list>
+<score-part id="P1"><part-name>Soprano</part-name></score-part>
+<score-part id="P2"><part-name>Soprano II</part-name></score-part>
+<score-part id="P3"><part-name>Alto</part-name></score-part>
+</part-list>
+<part id="P1"><measure number="1"><attributes><divisions>1</divisions><clef><sign>G</sign></clef></attributes>
+<note><pitch><step>C</step><octave>5</octave></pitch><duration>4</duration></note></measure></part>
+<part id="P2"><measure number="1"><attributes><divisions>1</divisions><clef><sign>G</sign></clef></attributes>
+<note><pitch><step>G</step><octave>4</octave></pitch><duration>4</duration></note></measure></part>
+<part id="P3"><measure number="1"><attributes><divisions>1</divisions><clef><sign>G</sign></clef></attributes>
+<note><pitch><step>E</step><octave>4</octave></pitch><duration>4</duration></note></measure></part>
+</score-partwise>""", encoding="utf-8")
+        named_voices, extra = recognize.assign_voices(recognize.read_score(named)["lines"])
+        self.assertEqual([note["pitch"] for note in named_voices["S"]], [72])
+        self.assertEqual([note["pitch"] for note in named_voices["S2"]], [67])
+        self.assertEqual([note["pitch"] for note in named_voices["A"]], [64])
+        self.assertEqual(extra, "")
+        chinese = folder / "chinese.musicxml"
+        chinese.write_text("""<score-partwise><part-list>
+<score-part id="P1"><part-name>女高</part-name></score-part>
+<score-part id="P2"><part-name>女高二</part-name></score-part>
+</part-list>
+<part id="P1"><measure number="1"><attributes><divisions>1</divisions><clef><sign>G</sign></clef></attributes>
+<note><pitch><step>D</step><octave>5</octave></pitch><duration>4</duration></note></measure></part>
+<part id="P2"><measure number="1"><attributes><divisions>1</divisions><clef><sign>G</sign></clef></attributes>
+<note><pitch><step>B</step><octave>4</octave></pitch><duration>4</duration></note></measure></part>
+</score-partwise>""", encoding="utf-8")
+        chinese_voices, _ = recognize.assign_voices(recognize.read_score(chinese)["lines"])
+        self.assertEqual([note["pitch"] for note in chinese_voices["S"]], [74])
+        self.assertEqual([note["pitch"] for note in chinese_voices["S2"]], [71])
+        self.assertEqual(chinese_voices["A"], [])
+        layers = folder / "layers.musicxml"
+        layers.write_text("""<score-partwise><part-list>
+<score-part id="P1"><part-name>Soprano</part-name></score-part>
+<score-part id="P2"><part-name>Alto</part-name></score-part>
+</part-list>
+<part id="P1"><measure number="1"><attributes><divisions>1</divisions><clef><sign>G</sign></clef></attributes>
+<note><pitch><step>C</step><octave>5</octave></pitch><duration>4</duration><voice>1</voice></note>
+<backup><duration>4</duration></backup>
+<note><pitch><step>E</step><octave>4</octave></pitch><duration>4</duration><voice>2</voice></note></measure>
+<measure number="2"><note><pitch><step>D</step><octave>5</octave></pitch><duration>4</duration><voice>1</voice></note>
+<backup><duration>4</duration></backup>
+<note><pitch><step>F</step><octave>4</octave></pitch><duration>4</duration><voice>2</voice></note></measure></part>
+<part id="P2"><measure number="1"><attributes><divisions>1</divisions><clef><sign>G</sign></clef></attributes>
+<note><pitch><step>A</step><octave>4</octave></pitch><duration>4</duration></note></measure>
+<measure number="2"><note><pitch><step>B</step><octave>4</octave></pitch><duration>4</duration></note></measure></part>
+</score-partwise>""", encoding="utf-8")
+        layer_voices, layer_extra = recognize.assign_voices(recognize.read_score(layers)["lines"])
+        self.assertEqual([note["pitch"] for note in layer_voices["S"]], [72, 74])
+        self.assertEqual([note["pitch"] for note in layer_voices["S2"]], [64, 65])
+        self.assertEqual([note["pitch"] for note in layer_voices["A"]], [69, 71])
+        self.assertEqual(layer_extra, "")
+
+    def test_divided_parts_come_back_from_the_exported_score(self):
+        piece = score.new_piece("d" * 32, "分声.pdf", 1)
+        piece["bpm"] = 80
+        piece["beats_per_bar"] = 4
+        piece["voices"]["S"] = [{"start": 0, "duration": 1, "pitch": 72}]
+        piece["voices"]["S2"] = [
+            {"start": 0, "duration": 1, "pitch": 64},
+            {"start": 0, "duration": 1, "pitch": 67},
+        ]
+        piece["voices"]["A"] = [{"start": 0, "duration": 1, "pitch": 60}]
+        path = Path(tempfile.mkdtemp()) / "divided.musicxml"
+        written = score.write_musicxml(piece)
+        path.write_text(written, encoding="utf-8")
+        self.assertIn("女高一", written)
+        self.assertIn("女高二", written)
+        voices, bpm, beats, extra, tempo_written = recognize.voices_from_file(path)
+        self.assertEqual((bpm, beats, extra, tempo_written), (80, 4, "", True))
+        self.assertEqual(voices["S"], piece["voices"]["S"])
+        self.assertEqual(voices["S2"], piece["voices"]["S2"])
+        self.assertEqual(voices["A"], piece["voices"]["A"])
+        self.assertEqual(voices["A2"], [])
+
+    def test_the_second_voice_sings_the_unison_and_tenor_stays_sounding(self):
+        piece = score.new_piece("e" * 32, "男高.pdf", 1)
+        piece["voices"]["T"] = [{"start": 0, "duration": 1, "pitch": 60}, {"start": 1, "duration": 1, "pitch": 62}]
+        piece["voices"]["T2"] = [{"start": 0, "duration": 1, "pitch": 55}]
+        written = score.write_musicxml(piece)
+        self.assertIn("<clef-octave-change>-1</clef-octave-change>", written)
+        path = Path(tempfile.mkdtemp()) / "tenor.musicxml"
+        path.write_text(written, encoding="utf-8")
+        voices, bpm, beats, extra, tempo_written = recognize.voices_from_file(path)
+        self.assertEqual((bpm, beats, extra, tempo_written), (72, 4, "", True))
+        self.assertEqual(voices["T"], piece["voices"]["T"])
+        self.assertEqual(voices["T2"], [
+            {"start": 0, "duration": 1, "pitch": 55},
+            {"start": 1, "duration": 1, "pitch": 62},
+        ])
+        old = score.new_piece("f" * 32, "旧谱.pdf", 1)
+        del old["tenor_sounding"]
+        old["voices"]["S"] = [
+            {"start": 0, "duration": 1, "pitch": 72},
+            {"start": 1, "duration": 1, "pitch": 74},
+        ]
+        old["voices"]["S2"] = [{"start": 0, "duration": 1, "pitch": 64}]
+        old["voices"]["T"] = [{"start": 0, "duration": 1, "pitch": 67}]
+        score.prepare_piece(old)
+        self.assertEqual([note["pitch"] for note in old["voices"]["S2"]], [64, 74])
+        self.assertEqual(old["voices"]["T"][0]["pitch"], 55)
+        self.assertTrue(old["tenor_sounding"])
+        score.prepare_piece(old)
+        self.assertEqual([note["pitch"] for note in old["voices"]["S2"]], [64, 74])
+        self.assertEqual(old["voices"]["T"][0]["pitch"], 55)
+
+
 class MusicXmlTests(unittest.TestCase):
     def test_exported_score_comes_back_with_the_written_notes(self):
         piece = score.new_piece("b" * 32, "试唱.pdf", 1)
@@ -504,6 +759,7 @@ class MusicXmlTests(unittest.TestCase):
         self.assertEqual(voices["B"], piece["voices"]["B"])
         self.assertEqual(voices["P"], piece["voices"]["P"])
         self.assertEqual(voices["A"], [])
+        self.assertEqual(voices["S2"], [])
 
     def test_the_project_keeps_the_electronic_score_it_just_wrote(self):
         folder = Path(tempfile.mkdtemp())
@@ -556,6 +812,35 @@ class ApiTests(unittest.TestCase):
         self.assertTrue(stored.is_file())
         self.assertIn("女高", stored.read_text(encoding="utf-8"))
         self.assertTrue((Path(os.environ["FENBU_DATA"]) / piece["id"] / "page-01.png").is_file())
+
+    def test_bpm_thirty_renders_and_delete_removes_the_piece(self):
+        client = TestClient(app.app)
+        with app.pymupdf.open() as document:
+            document.new_page().insert_text((72, 72), "slow")
+            pdf = document.tobytes()
+        created = client.post("/api/pieces", files=[("files", ("slow.pdf", pdf, "application/pdf"))])
+        self.assertEqual(created.status_code, 200, created.text)
+        piece = created.json()
+        saved = client.put(f"/api/pieces/{piece['id']}/voice", json={
+            "voice": "S", "bpm": 72, "beats_per_bar": 4, "bars": 2,
+            "notes": [{"start": 0, "duration": 1, "pitch": 72}, {"start": 1, "duration": 1, "pitch": 74}],
+        })
+        self.assertEqual(saved.status_code, 200, saved.text)
+        slow = client.get(f"/api/pieces/{piece['id']}/voices/S.wav?bpm=30")
+        fast = client.get(f"/api/pieces/{piece['id']}/voices/S.wav?bpm=72")
+        self.assertEqual(slow.status_code, 200, slow.text)
+        self.assertEqual(fast.status_code, 200, fast.text)
+        self.assertGreater(len(slow.content), len(fast.content))
+        self.assertTrue(slow.content.startswith(b"RIFF"))
+        app.JOBS[piece["id"]] = object()
+        busy = client.delete(f"/api/pieces/{piece['id']}")
+        self.assertEqual(busy.status_code, 409, busy.text)
+        app.JOBS.pop(piece["id"], None)
+        removed = client.delete(f"/api/pieces/{piece['id']}")
+        self.assertEqual(removed.status_code, 200, removed.text)
+        self.assertEqual(client.get(f"/api/pieces/{piece['id']}").status_code, 404)
+        listing = client.get("/api/pieces")
+        self.assertNotIn(piece["id"], [row["id"] for row in listing.json()])
 
 
 if __name__ == "__main__":

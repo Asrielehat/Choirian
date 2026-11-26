@@ -4,6 +4,7 @@ homr (https://github.com/liebharc/homr) reads the page images. Audiveris is the
 fallback, and when it exports several movements only the substantial one is kept.
 """
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -11,7 +12,7 @@ import zipfile
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-from score import VOICE_NAMES, VOICES
+from score import PARTS, VOICES, part_name, sing_together
 
 STEPS = {"C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11}
 ROLE_WORDS = {
@@ -21,6 +22,7 @@ ROLE_WORDS = {
     "B": ("bass", "男低"),
 }
 ACCOMPANIMENT = ("piano", "keyboard", "accomp", "pno", "钢琴", "伴奏")
+_SECOND_VOICE = re.compile(r"(?<![a-z0-9])(?:ii|2nd|second|2)(?![a-z0-9])|二")
 OTHER_PARTS = (
     "solo", "独唱", "独奏", "sax", "萨克斯", "violin", "小提琴", "cello", "大提琴",
     "flute", "长笛", "clarinet", "单簧管", "trumpet", "小号", "horn", "圆号",
@@ -106,6 +108,24 @@ def _group_clef(measures, previous):
     return previous
 
 
+def _clef_shift(clef):
+    raw = clef.findtext("clef-octave-change")
+    if not raw:
+        return 0
+    try:
+        return int(raw)
+    except ValueError:
+        return 0
+
+
+def _group_octave(measures, previous):
+    for measure in measures:
+        clef = measure.find(".//clef")
+        if clef is not None and clef.findtext("sign"):
+            return _clef_shift(clef)
+    return previous
+
+
 # A bracketed choir that homr wrote as one part: four staves, two staves, or those plus piano.
 CHOIR_STACKS = {("G", "F"), ("G", "G", "G", "F"), ("G", "G", "G", "F", "G", "F")}
 
@@ -130,6 +150,15 @@ def _first_explicit_clef(groups):
             if sign:
                 return sign
     return "G"
+
+
+def _first_octave(groups):
+    for group in groups:
+        for measure in group:
+            clef = measure.find(".//clef")
+            if clef is not None and clef.findtext("sign"):
+                return _clef_shift(clef)
+    return 0
 
 
 def _already_together(part):
@@ -189,26 +218,30 @@ def _expand_part(part, division=1.0, beats=4.0, name=""):
     if not groups:
         return [], state, end_division, end_beats
     clefs = []
+    octaves = []
     previous = "G"
+    previous_octave = 0
     for group in groups:
         previous = _group_clef(group, previous)
+        previous_octave = _group_octave(group, previous_octave)
         clefs.append(previous)
+        octaves.append(previous_octave)
     period = 0 if _is_accompaniment(name) or _already_together(part) else _stack_period(clefs)
     if period and not _every_slot_has_a_note(groups, period):
         period = 0
 
-    def pack(groups_for_voice, hint, clef):
+    def pack(groups_for_voice, hint, clef, octave):
         measures = [measure for group in groups_for_voice for measure in group]
-        return measures, hint, clef
+        return measures, hint, clef, octave
 
     if not period:
-        return [pack(groups, None, _first_explicit_clef(groups))], state, end_division, end_beats
+        return [pack(groups, None, _first_explicit_clef(groups), _first_octave(groups))], state, end_division, end_beats
     hints = [None] * period
     if period == 6 and clefs[:6] == ["G", "G", "G", "F", "G", "F"]:
         hints = [None, None, None, None, "Piano", "Piano"]
     rows = len(groups) // period
     packs = [
-        pack([groups[row * period + voice] for row in range(rows)], hints[voice], clefs[voice])
+        pack([groups[row * period + voice] for row in range(rows)], hints[voice], clefs[voice], octaves[voice])
         for voice in range(period)
     ]
     return packs, state, end_division, end_beats
@@ -359,7 +392,9 @@ def _measures(measure_list, state=None):
             duration = float(item.findtext("duration", "0")) / division
             if item.find("chord") is not None:
                 if run:
-                    run[-1]["events"].extend(_note_events(item, duration))
+                    for event in _note_events(item, duration):
+                        event["chord"] = True
+                        run[-1]["events"].append(event)
                 continue
             run.append({
                 "duration": duration,
@@ -391,6 +426,7 @@ def _note_events(item, duration):
         "tie_stop": tie_stop,
         "slur_start": slur_start,
         "slur_stop": slur_stop,
+        "chord": False,
     }]
 
 
@@ -412,7 +448,19 @@ def _merge_holds(notes):
             notes[earlier]["start"] + notes[earlier]["duration"] - notes[later]["start"]
         ) < 0.02
 
+    def shares_the_attack(index):
+        start = notes[index]["start"]
+        pitch = notes[index]["pitch"]
+        return any(
+            other != index
+            and notes[other]["pitch"] != pitch
+            and abs(notes[other]["start"] - start) < 0.02
+            for other in range(len(notes))
+        )
+
     def previous_same(later, limit):
+        if shares_the_attack(later):
+            return None
         pitch = notes[later]["pitch"]
         for earlier in range(later - 1, limit - 1, -1):
             if notes[earlier]["pitch"] != pitch:
@@ -444,6 +492,8 @@ def _merge_holds(notes):
                 break
             if notes[candidate]["start"] < note["start"] - 0.02:
                 break
+        if shares_the_attack(later):
+            continue
         if earlier is not None and (note.get("tie_stop") or notes[earlier].get("tie_start")):
             link(earlier, later)
             claimed.add(earlier)
@@ -460,7 +510,12 @@ def _merge_holds(notes):
             open_slur[number] = index
 
     return [
-        {"start": note["start"], "duration": note["duration"], "pitch": note["pitch"]}
+        {
+            "start": note["start"],
+            "duration": note["duration"],
+            "pitch": note["pitch"],
+            "chord": bool(note.get("chord")),
+        }
         for index, note in enumerate(notes)
         if find(index) == index
     ]
@@ -478,12 +533,16 @@ def _absolute(measures, starts):
                 "tie_stop": event["tie_stop"],
                 "slur_start": event["slur_start"],
                 "slur_stop": event["slur_stop"],
+                "chord": bool(event.get("chord")),
             })
     return grouped
 
 
-def _staff_lines(grouped, label, clef):
-    """Two sung voices on one staff stay apart. S.A. shares the treble, T.B. shares the bass."""
+def _staff_lines(grouped, label, clef, octave_shift=0):
+    """Two sung voices on one staff stay apart. S.A. shares the treble, T.B. shares the bass.
+
+    The second voice keeps its own layer, so a divided part can still be heard.
+    """
     lines = []
     piano = _is_accompaniment(label)
     for staff in sorted(grouped, key=lambda value: int(value) if str(value).isdigit() else 0):
@@ -498,24 +557,43 @@ def _staff_lines(grouped, label, clef):
                 selected.append(voice)
             else:
                 extra.extend(_merge_holds(notes))
-        for voice in sorted(selected, key=lambda value: int(value) if str(value).isdigit() else 0):
+        ordered = sorted(selected, key=lambda value: int(value) if str(value).isdigit() else 0)
+        for index, voice in enumerate(ordered):
             notes = _merge_holds(list(layers[voice]))
             if voice == main:
                 notes.extend(extra)
             if not notes:
                 continue
-            upper, lower = (notes, []) if piano or len(selected) > 1 else _split_sung(notes)
-            lines.append({"name": label, "clef": clef, "notes": upper, "layer": 0})
+            if piano or len(selected) > 1:
+                upper, lower = notes, []
+            else:
+                upper, lower = _split_sung(notes)
+            lines.append({
+                "name": label,
+                "clef": clef,
+                "octave_shift": octave_shift,
+                "notes": upper,
+                "layer": index if len(selected) > 1 else 0,
+            })
             if lower:
-                lines.append({"name": label, "clef": clef, "notes": lower, "layer": 1})
+                lines.append({"name": label, "clef": clef, "octave_shift": octave_shift, "notes": lower, "layer": 1})
     return lines
 
 
-def _split_sung(notes):
-    """Two noteheads at the same moment are the two singers on that staff.
+def _lead(notes):
+    """The note on the stem stays with the first voice. A chord that has no stem note keeps the top one."""
+    stems = [note for note in notes if not note.get("chord")]
+    if len(stems) == 1:
+        return stems[0]
+    return max(notes, key=lambda note: note["pitch"])
 
-    The higher one is S or T, the lower one is A or B. A piano chord never
-    reaches this function.
+
+def _split_sung(notes):
+    """Enough stacked noteheads on one staff are the two singers there.
+
+    The note on the stem stays on the upper line. Every other pitch stays on the
+    lower line, so a three-note stack keeps the middle pitch with the top when the
+    top is the stem. One stack, or a rare one, stays together and is divided later.
     """
     by_start = {}
     for note in notes:
@@ -528,11 +606,35 @@ def _split_sung(notes):
         return notes, []
     upper, lower = [], []
     for start in sorted(by_start):
-        group = sorted(by_start[start], key=lambda note: note["pitch"])
-        upper.append({key: group[-1][key] for key in ("start", "duration", "pitch")})
-        if group[0]["pitch"] != group[-1]["pitch"]:
-            lower.append({key: group[0][key] for key in ("start", "duration", "pitch")})
+        ordered = sorted(by_start[start], key=lambda note: note["pitch"])
+        unique = []
+        for note in ordered:
+            if unique and unique[-1]["pitch"] == note["pitch"]:
+                continue
+            unique.append(note)
+        lead = _lead(unique)
+        upper.append({key: lead[key] for key in ("start", "duration", "pitch")})
+        for note in unique:
+            if note is lead:
+                continue
+            lower.append({key: note[key] for key in ("start", "duration", "pitch")})
     return upper, lower
+
+
+def _named_divisi(name):
+    """Soprano II and 女高二 are the second voice of that part."""
+    value = name.lower()
+    role = _role(value)
+    if role is None:
+        return None
+    rest = value
+    for word in ROLE_WORDS[role]:
+        if word in rest:
+            rest = rest.replace(word, " ", 1)
+            break
+    if _SECOND_VOICE.search(rest):
+        return f"{role}2"
+    return None
 
 
 def _is_other(name):
@@ -568,7 +670,7 @@ def read_score(path, division=1.0, beats=4.0):
     root = _as_partwise(_read_xml(path))
     names = {item.get("id"): item.findtext("part-name", item.get("id")) for item in root.findall("./part-list/score-part")}
     tempos = [float(item.get("tempo")) for item in root.findall(".//sound") if item.get("tempo")]
-    bpm = int(tempos[0]) if tempos and 36 <= tempos[0] <= 220 else 72
+    bpm = int(tempos[0]) if tempos and 24 <= tempos[0] <= 220 else 72
     parsed = []
     ending = (division, beats)
     for part in root.findall("part"):
@@ -576,22 +678,22 @@ def read_score(path, division=1.0, beats=4.0):
         if (end_division, end_beats) != (division, beats):
             ending = (end_division, end_beats)
         label = names.get(part.get("id"), part.get("id"))
-        for measures, hint, clef in packs:
-            parsed.append((hint or label, clef, _measures(measures, state)))
-    count = max((len(measures) for _, _, measures in parsed), default=0)
+        for measures, hint, clef, octave in packs:
+            parsed.append((hint or label, clef, _measures(measures, state), octave))
+    count = max((len(measures) for _, _, measures, _octave in parsed), default=0)
     starts = []
     cursor = 0.0
     for index in range(count):
         starts.append(cursor)
         entries = [
             (measures[index][1], bool(measures[index][0]))
-            for _, _, measures in parsed
+            for _, _, measures, _octave in parsed
             if index < len(measures)
         ]
         cursor += _agreed_length(entries) if entries else beats
     lines = []
-    for label, clef, measures in parsed:
-        lines.extend(_staff_lines(_absolute(measures, starts), label, clef))
+    for label, clef, measures, octave in parsed:
+        lines.extend(_staff_lines(_absolute(measures, starts), label, clef, octave))
     meter_beats = int(round(ending[1]))
     return {
         "bpm": bpm,
@@ -636,12 +738,24 @@ def _is_accompaniment(name):
 
 
 def _singles(notes):
+    """One note per beat, the higher one, so a written F5 is what lines up with the others."""
     singles = []
-    for note in sorted(notes, key=lambda item: (item["start"], item["pitch"])):
+    for note in sorted(notes, key=lambda item: (item["start"], -item["pitch"])):
         if singles and abs(note["start"] - singles[-1]["start"]) < 0.02:
             continue
         singles.append(note)
     return singles
+
+
+def _shares_the_beat(note, notes, partner):
+    """A beat homr wrote as two pitches stays put, even after the lower one is the second voice."""
+    pool = list(notes) + list(partner or [])
+    return any(
+        other is not note
+        and other["pitch"] != note["pitch"]
+        and abs(other["start"] - note["start"]) < 0.02
+        for other in pool
+    )
 
 
 def _motives(notes, size=3):
@@ -675,6 +789,8 @@ def _wait_with_the_others(voices):
         for group in _motives(notes):
             if _triplet_lengths(group) or any(id(note) in used for note in group):
                 continue
+            if any(_shares_the_beat(note, notes, voices.get(f"{role}2")) for note in group):
+                continue
             classes = [note["pitch"] % 12 for note in group]
             start = group[0]["start"]
             finish = group[-1]["start"] + group[-1]["duration"]
@@ -695,9 +811,9 @@ def _wait_with_the_others(voices):
                         best = (delay, candidate)
             if best is None:
                 continue
-            repairs.append((notes, group, best[1]))
+            repairs.append((role, notes, group, best[1]))
             used.update(id(note) for note in group)
-    for notes, group, candidate in repairs:
+    for role, notes, group, candidate in repairs:
         start = group[0]["start"]
         previous = None
         for note in notes:
@@ -706,28 +822,80 @@ def _wait_with_the_others(voices):
             if abs(note["start"] + note["duration"] - start) <= 0.05 and (previous is None or note["start"] > previous["start"]):
                 previous = note
         for note, target in zip(group, candidate):
-            note["start"] = round(target["start"], 4)
+            old_start = note["start"]
+            new_start = round(target["start"], 4)
+            note["start"] = new_start
             note["duration"] = round(target["duration"], 4)
+            for sibling in notes:
+                if sibling is not note and abs(sibling["start"] - old_start) <= 0.02:
+                    sibling["start"] = new_start
+            for sibling in voices.get(f"{role}2", []):
+                if abs(sibling["start"] - old_start) <= 0.02:
+                    sibling["start"] = new_start
         if previous is not None:
             previous["duration"] = round(group[0]["start"] - previous["start"], 4)
-    for role in (*VOICES, "P"):
+    for role in PARTS:
         voices[role].sort(key=lambda note: (note["start"], note["pitch"]))
+
+
+def _sounding(line, role):
+    """Tenor written in treble sounds an octave lower. A clef octave mark is already sounding."""
+    shift = -12 if role in ("T", "T2") and line.get("clef") == "G" and not line.get("octave_shift") else 0
+    return [
+        {"start": note["start"], "duration": note["duration"], "pitch": int(note["pitch"]) + shift, "chord": bool(note.get("chord"))}
+        for note in line["notes"]
+    ]
+
+
+def _split_divisi(voices):
+    """Two pitches at one moment inside a part are its first and second voices.
+
+    The note on the stem stays. Every other pitch goes to the second voice and still
+    sounds. A chord with no stem note keeps the top one. The same pitch written twice stays one note.
+    """
+    for role in VOICES:
+        grouped = {}
+        for note in voices[role]:
+            grouped.setdefault(note["start"], []).append(note)
+        kept = []
+        extra = []
+        for start in sorted(grouped):
+            ordered = sorted(grouped[start], key=lambda note: note["pitch"])
+            unique = []
+            for note in ordered:
+                if unique and unique[-1]["pitch"] == note["pitch"]:
+                    continue
+                unique.append(note)
+            lead = _lead(unique)
+            kept.append(lead)
+            extra.extend(note for note in unique if note is not lead)
+        voices[role] = kept
+        if extra:
+            voices[f"{role}2"].extend(extra)
+            voices[f"{role}2"].sort(key=lambda note: (note["start"], note["pitch"]))
 
 
 def assign_voices(lines, trust=False):
     other = [line for line in lines if _is_other(line["name"])]
     piano = [line for line in lines if line not in other and _is_accompaniment(line["name"])]
     vocal = [line for line in lines if line not in other and line not in piano]
-    voices = {role: [] for role in (*VOICES, "P")}
+    voices = {role: [] for role in PARTS}
     claimed = set()
     pending = []
     for line in vocal:
+        named = _named_divisi(line["name"])
+        if named:
+            voices[named].extend(_sounding(line, named))
+            continue
         role = _role(line["name"])
+        if role and line.get("layer", 0) >= 1:
+            voices[f"{role}2"].extend(_sounding(line, f"{role}2"))
+            continue
         if role and role not in claimed:
-            voices[role] = line["notes"]
+            voices[role] = _sounding(line, role)
             claimed.add(role)
-        else:
-            pending.append(line)
+            continue
+        pending.append(line)
     kept = []
     outside = 0
     seen_bass = False
@@ -745,9 +913,10 @@ def assign_voices(lines, trust=False):
         previous = groups[-1] if groups else None
         if (
             previous
-            and line.get("layer") == 1
-            and previous[-1].get("layer", 0) == 0
+            and line.get("layer", 0) >= 1
+            and previous[0].get("layer", 0) == 0
             and previous[-1].get("clef") == line.get("clef")
+            and previous[-1].get("name") == line.get("name")
         ):
             previous.append(line)
         else:
@@ -762,20 +931,35 @@ def assign_voices(lines, trust=False):
         role_plan = None
     if role_plan:
         for group, roles in zip(groups, role_plan):
-            lines = group if len(roles) > 1 else [line for line in group if line.get("layer", 0) == 0] or group[:1]
-            for index, line in enumerate(lines):
-                role = roles[min(index, len(roles) - 1)]
-                voices[role] = list(voices[role]) + list(line["notes"])
+            if len(roles) > 1:
+                for index, line in enumerate(group):
+                    role = roles[min(index, len(roles) - 1)]
+                    voices[role] = list(voices[role]) + _sounding(line, role)
+                continue
+            role = roles[0]
+            primary = [line for line in group if line.get("layer", 0) == 0] or group[:1]
+            for line in primary:
+                voices[role] = list(voices[role]) + _sounding(line, role)
+            for line in group:
+                if line in primary:
+                    continue
+                voices[f"{role}2"] = list(voices[f"{role}2"]) + _sounding(line, f"{role}2")
         pending = []
     for role in VOICES:
         if role in claimed or not pending:
             continue
-        voices[role] = pending.pop(0)["notes"]
+        voices[role] = _sounding(pending.pop(0), role)
     piano_notes = [note for line in piano for note in line["notes"]]
     piano_notes.sort(key=lambda note: (note["start"], note["pitch"]))
     voices["P"] = piano_notes
     if not trust:
         _wait_with_the_others(voices)
+    _split_divisi(voices)
+    sing_together(voices)
+    for role in PARTS:
+        voices[role].sort(key=lambda note: (note["start"], note["pitch"]))
+        for note in voices[role]:
+            note.pop("chord", None)
     extra = ""
     if pending:
         extra += f"还有 {len(pending)} 条谱表没有放进四个声部。"
@@ -791,7 +975,7 @@ def voices_from_file(path):
     parsed = read_score(path)
     voices, extra = assign_voices(parsed["lines"], trust=True)
     cleaned = {}
-    for role in (*VOICES, "P"):
+    for role in PARTS:
         cleaned[role] = [
             {"start": note["start"], "duration": note["duration"], "pitch": int(note["pitch"])}
             for note in voices[role]
@@ -802,7 +986,7 @@ def voices_from_file(path):
 
 def join_scores(parsed_list):
     """Place later pages after earlier ones. Each file's timeline starts at beat 0."""
-    voices = {role: [] for role in (*VOICES, "P")}
+    voices = {role: [] for role in PARTS}
     warnings = []
     bpm, beats = 72, 4
     offset = 0.0
@@ -811,7 +995,7 @@ def join_scores(parsed_list):
     for parsed in parsed_list:
         assigned, extra = assign_voices(parsed["lines"])
         vocal_counts.append(sum(1 for role in VOICES if assigned[role]))
-        if not any(assigned[role] for role in (*VOICES, "P")):
+        if not any(assigned[role] for role in PARTS):
             warnings.append("有一段没有读出音符。")
             continue
         end = offset
@@ -903,8 +1087,14 @@ def _read_exports(paths):
 
 
 def _describe(engine, voices, extra, detail=""):
-    shown = list(VOICES) + (["P"] if voices.get("P") else [])
-    counts = "，".join(f"{VOICE_NAMES[voice]} {len(voices[voice])} 个音" for voice in shown)
+    shown = []
+    for voice in VOICES:
+        shown.append(voice)
+        if voices.get(f"{voice}2"):
+            shown.append(f"{voice}2")
+    if voices.get("P"):
+        shown.append("P")
+    counts = "，".join(f"{part_name(voice, voices)} {len(voices[voice])} 个音" for voice in shown)
     return f"{engine}：{counts}。{extra}{detail}"
 
 

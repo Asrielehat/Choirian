@@ -8,9 +8,29 @@ import zipfile
 from xml.etree import ElementTree as ET
 
 VOICES = ("S", "A", "T", "B")
+DIVISI = ("S2", "A2", "T2", "B2")
+SECOND_OF = {"S": "S2", "A": "A2", "T": "T2", "B": "B2"}
 PIANO = "P"
-PARTS = (*VOICES, PIANO)
-VOICE_NAMES = {"S": "女高", "A": "女低", "T": "男高", "B": "男低", "P": "钢琴"}
+PARTS = ("S", "S2", "A", "A2", "T", "T2", "B", "B2", PIANO)
+VOICE_NAMES = {
+    "S": "女高",
+    "S2": "女高二",
+    "A": "女低",
+    "A2": "女低二",
+    "T": "男高",
+    "T2": "男高二",
+    "B": "男低",
+    "B2": "男低二",
+    "P": "钢琴",
+}
+
+
+def part_name(voice, voices=None):
+    """A divided part is 女高一 and 女高二. An undivided part stays 女高."""
+    second = SECOND_OF.get(voice)
+    if second and voices and (voices.get(second) or []):
+        return f"{VOICE_NAMES[voice]}一"
+    return VOICE_NAMES[voice]
 DURATIONS = (0.5, 1, 1.5, 2, 3, 4)
 
 
@@ -25,12 +45,13 @@ def new_piece(piece_id, name, pages):
         "voices": {voice: [] for voice in PARTS},
         "report": "",
         "job": {"status": "idle", "message": ""},
+        "tenor_sounding": True,
     }
 
 
 def apply_recognition(piece, voices, bpm, beats_per_bar, report):
     piece["voices"] = {voice: voices.get(voice) or [] for voice in PARTS}
-    piece["bpm"] = bpm if 36 <= bpm <= 220 else 72
+    piece["bpm"] = bpm if 24 <= bpm <= 220 else 72
     piece["beats_per_bar"] = beats_per_bar if beats_per_bar in (2, 3, 4, 6) else 4
     end = 0.0
     for notes in piece["voices"].values():
@@ -39,6 +60,48 @@ def apply_recognition(piece, voices, bpm, beats_per_bar, report):
     piece["bars"] = max(1, math.ceil(end / piece["beats_per_bar"] - 1e-6))
     piece["report"] = report
     piece["job"] = {"status": "done", "message": report}
+    piece["tenor_sounding"] = True
+    return piece
+
+
+def _sounds_during(note, others):
+    start = float(note["start"])
+    end = start + float(note["duration"])
+    for other in others:
+        other_start = float(other["start"])
+        other_end = other_start + float(other["duration"])
+        if start < other_end - 0.02 and other_start < end - 0.02:
+            return True
+    return False
+
+
+def sing_together(voices):
+    """A divided part sings the same note until the two voices actually split."""
+    for role, second in SECOND_OF.items():
+        divided = [dict(note) for note in voices.get(second) or []]
+        if not divided:
+            continue
+        merged = list(divided)
+        for note in voices.get(role) or []:
+            if _sounds_during(note, divided):
+                continue
+            merged.append({"start": note["start"], "duration": note["duration"], "pitch": note["pitch"]})
+        merged.sort(key=lambda item: (item["start"], item["pitch"]))
+        voices[second] = merged
+    return voices
+
+
+def prepare_piece(piece):
+    """Old scores stored tenor at the written treble pitch, and a second voice only where it split."""
+    voices = piece.setdefault("voices", {})
+    for role in PARTS:
+        voices.setdefault(role, [])
+    if not piece.get("tenor_sounding"):
+        for role in ("T", "T2"):
+            for note in voices[role]:
+                note["pitch"] = int(note["pitch"]) - 12
+        piece["tenor_sounding"] = True
+    sing_together(voices)
     return piece
 
 
@@ -84,7 +147,7 @@ def update_piece(piece, bpm, beats_per_bar, bars, voice, notes):
         raise ValueError("拍号只支持 2/4、3/4、4/4、6/4")
     if type(bars) is not int or not 1 <= bars <= 80:
         raise ValueError("小节数应为 1–80")
-    bpm_value = _number(bpm, 36, 220, "速度")
+    bpm_value = _number(bpm, 24, 220, "速度")
     piece["bpm"] = int(round(bpm_value))
     piece["beats_per_bar"] = beats_per_bar
     piece["bars"] = bars
@@ -95,21 +158,33 @@ def update_piece(piece, bpm, beats_per_bar, bars, voice, notes):
     return piece
 
 
+_TONE_CACHE = {}
+
+
 def _tone(pitch, seconds, sample_rate):
-    """A small piano: stretched partials, a short hammer, and a decay that thins out."""
+    """A piano string: the wire is slightly stiff, the hammer clicks, and high partials die first."""
     count = max(1, int(seconds * sample_rate))
+    key = (int(pitch), sample_rate)
+    cached = _TONE_CACHE.get(key)
+    if cached is not None and len(cached) >= count:
+        return cached[:count]
     frequency = 440.0 * (2.0 ** ((pitch - 69) / 12.0))
-    partials = ((1, 1.0), (2, 0.42), (3, 0.2), (4, 0.11), (5, 0.06), (6, 0.035))
+    stiffness = 0.0002 + 0.0003 * max(0.0, (64 - pitch) / 40.0)
     samples = array.array("h")
     for index in range(count):
         time = index / sample_rate
-        attack = 1 - math.exp(-350 * time)
+        attack = 1.0 - math.exp(-800.0 * time)
         wave_sum = 0.0
-        for number, weight in partials:
-            stretched = frequency * number * (1 + 0.00015 * number * number)
-            wave_sum += weight * math.exp(-time * (1.5 + 1.3 * number)) * math.sin(2 * math.pi * stretched * time)
-        hammer = math.exp(-80 * time) * math.sin(2 * math.pi * (frequency * 7 + 900) * time)
-        samples.append(int(max(-32767, min(32767, 9000 * attack * (wave_sum + 0.12 * hammer)))))
+        for number in range(1, 7):
+            stretched = frequency * number * math.sqrt(1.0 + stiffness * number * number)
+            weight = 1.0 / (number ** 0.85)
+            decay = math.exp(-time * (0.9 + 1.8 * number * number))
+            wave_sum += weight * decay * math.sin(2.0 * math.pi * stretched * time)
+        hammer = math.exp(-350.0 * time) * math.sin(2.0 * math.pi * (frequency * 8.0 + 1400.0) * time)
+        felt = math.exp(-220.0 * time) * math.sin(2.0 * math.pi * (frequency * 13.7 + 2400.0) * time)
+        body = attack * wave_sum + 0.22 * hammer + 0.05 * felt
+        samples.append(int(max(-32767, min(32767, 7800 * body))))
+    _TONE_CACHE[key] = samples
     return samples
 
 
@@ -138,7 +213,8 @@ def render_wav(notes, bpm, sample_rate=22050):
     return buffer.getvalue()
 
 
-def render_zip(piece):
+def render_zip(piece, bpm=None):
+    tempo = piece["bpm"] if bpm is None else bpm
     buffer = io.BytesIO()
     written = 0
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
@@ -146,7 +222,7 @@ def render_zip(piece):
             notes = piece["voices"].get(voice) or []
             if not notes:
                 continue
-            archive.writestr(f"{voice}-{VOICE_NAMES[voice]}.wav", render_wav(notes, piece["bpm"]))
+            archive.writestr(f"{voice}-{part_name(voice, piece['voices'])}.wav", render_wav(notes, tempo))
             written += 1
     if not written:
         raise ValueError("还没有可以导出的声部")
@@ -315,11 +391,12 @@ def write_musicxml(piece):
     work = ET.SubElement(root, "work")
     ET.SubElement(work, "work-title").text = musicxml_name(piece.get("name") or "score").removesuffix(".musicxml")
     listing = ET.SubElement(root, "part-list")
-    identities = [(role, f"P{index}", VOICE_NAMES[role]) for index, role in enumerate(PARTS, start=1)]
+    roles = [role for role in PARTS if role not in DIVISI or piece["voices"].get(role)]
+    identities = [(role, f"P{index}", part_name(role, piece["voices"])) for index, role in enumerate(roles, start=1)]
     for _role, part_id, name in identities:
         score_part = ET.SubElement(listing, "score-part", {"id": part_id})
         ET.SubElement(score_part, "part-name").text = name
-    clefs = {"S": "G", "A": "G", "T": "G", "B": "F"}
+    clefs = {"S": "G", "S2": "G", "A": "G", "A2": "G", "T": "G", "T2": "G", "B": "F", "B2": "F"}
     for role, part_id, _name in identities:
         part = ET.SubElement(root, "part", {"id": part_id})
         notes = _part_notes(piece, role)
@@ -349,6 +426,8 @@ def write_musicxml(piece):
                     clef = ET.SubElement(attributes, "clef")
                     ET.SubElement(clef, "sign").text = clefs[role]
                     ET.SubElement(clef, "line").text = "2" if clefs[role] == "G" else "4"
+                    if role in ("T", "T2"):
+                        ET.SubElement(clef, "clef-octave-change").text = "-1"
                 if role == "S":
                     direction = ET.SubElement(measure, "direction")
                     ET.SubElement(direction, "sound", {"tempo": str(int(piece.get("bpm") or 72))})

@@ -3,6 +3,7 @@ import json
 import mimetypes
 import os
 import re
+import shutil
 import threading
 import time
 import uuid
@@ -39,7 +40,7 @@ def piece_dir(piece_id):
 
 
 def read_piece(folder):
-    return json.loads((folder / "piece.json").read_text(encoding="utf-8"))
+    return score.prepare_piece(json.loads((folder / "piece.json").read_text(encoding="utf-8")))
 
 
 def write_piece(folder, piece):
@@ -156,6 +157,19 @@ def get_piece(piece_id: str):
     return read_piece(piece_dir(piece_id))
 
 
+@app.delete("/api/pieces/{piece_id}")
+def delete_piece(piece_id: str):
+    folder = piece_dir(piece_id)
+    with LOCK:
+        if piece_id in JOBS:
+            raise HTTPException(409, "正在识别，请等这一次结束")
+        try:
+            shutil.rmtree(folder)
+        except OSError:
+            raise HTTPException(409, "这份谱正在使用，稍后再删") from None
+    return {"ok": True}
+
+
 @app.get("/api/pieces/{piece_id}/pages/{number}")
 def page_image(piece_id: str, number: int):
     folder = piece_dir(piece_id)
@@ -203,7 +217,7 @@ def wav_response(piece, voice, bpm=None):
 def voice_wav(piece_id: str, voice: str, bpm: int | None = None):
     if voice not in score.PARTS:
         raise HTTPException(400, "声部无效")
-    if bpm is not None and not 36 <= bpm <= 220:
+    if bpm is not None and not 24 <= bpm <= 220:
         raise HTTPException(400, "速度超出范围")
     return wav_response(read_piece(piece_dir(piece_id)), voice, bpm)
 
@@ -338,10 +352,12 @@ def import_score(piece_id: str, file: UploadFile = File(...)):
 
 
 @app.get("/api/pieces/{piece_id}/parts.zip")
-def parts_zip(piece_id: str):
+def parts_zip(piece_id: str, bpm: int | None = None):
+    if bpm is not None and not 24 <= bpm <= 220:
+        raise HTTPException(400, "速度超出范围")
     piece = read_piece(piece_dir(piece_id))
     try:
-        raw = score.render_zip(piece)
+        raw = score.render_zip(piece, bpm)
     except ValueError as error:
         raise HTTPException(400, str(error)) from None
     return Response(raw, media_type="application/zip", headers={"Content-Disposition": 'attachment; filename="fenbu-parts.zip"'})
