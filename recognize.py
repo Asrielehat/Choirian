@@ -161,6 +161,19 @@ def _first_octave(groups):
     return 0
 
 
+def _changes_to_bass(measures, opening):
+    """A staff that starts in treble and later switches to bass is not only a singer."""
+    current = opening or "G"
+    for measure in measures:
+        sign = measure.findtext(".//clef/sign")
+        if not sign:
+            continue
+        if current != "F" and sign == "F":
+            return True
+        current = sign
+    return False
+
+
 def _already_together(part):
     """A grand staff already plays its two hands together. Later systems follow it."""
     for measure in part.findall("measure"):
@@ -538,7 +551,7 @@ def _absolute(measures, starts):
     return grouped
 
 
-def _staff_lines(grouped, label, clef, octave_shift=0):
+def _staff_lines(grouped, label, clef, octave_shift=0, bass_clef_change=False):
     """Two sung voices on one staff stay apart. S.A. shares the treble, T.B. shares the bass.
 
     The second voice keeps its own layer, so a divided part can still be heard.
@@ -574,9 +587,17 @@ def _staff_lines(grouped, label, clef, octave_shift=0):
                 "octave_shift": octave_shift,
                 "notes": upper,
                 "layer": index if len(selected) > 1 else 0,
+                "bass_clef_change": bass_clef_change,
             })
             if lower:
-                lines.append({"name": label, "clef": clef, "octave_shift": octave_shift, "notes": lower, "layer": 1})
+                lines.append({
+                    "name": label,
+                    "clef": clef,
+                    "octave_shift": octave_shift,
+                    "notes": lower,
+                    "layer": 1,
+                    "bass_clef_change": bass_clef_change,
+                })
     return lines
 
 
@@ -679,21 +700,21 @@ def read_score(path, division=1.0, beats=4.0):
             ending = (end_division, end_beats)
         label = names.get(part.get("id"), part.get("id"))
         for measures, hint, clef, octave in packs:
-            parsed.append((hint or label, clef, _measures(measures, state), octave))
-    count = max((len(measures) for _, _, measures, _octave in parsed), default=0)
+            parsed.append((hint or label, clef, _measures(measures, state), octave, _changes_to_bass(measures, clef)))
+    count = max((len(measures) for _, _, measures, _octave, _changed in parsed), default=0)
     starts = []
     cursor = 0.0
     for index in range(count):
         starts.append(cursor)
         entries = [
             (measures[index][1], bool(measures[index][0]))
-            for _, _, measures, _octave in parsed
+            for _, _, measures, _octave, _changed in parsed
             if index < len(measures)
         ]
         cursor += _agreed_length(entries) if entries else beats
     lines = []
-    for label, clef, measures, octave in parsed:
-        lines.extend(_staff_lines(_absolute(measures, starts), label, clef, octave))
+    for label, clef, measures, octave, changed in parsed:
+        lines.extend(_staff_lines(_absolute(measures, starts), label, clef, octave, changed))
     meter_beats = int(round(ending[1]))
     return {
         "bpm": bpm,
@@ -875,6 +896,43 @@ def _split_divisi(voices):
             voices[f"{role}2"].sort(key=lambda note: (note["start"], note["pitch"]))
 
 
+def _group_count(group):
+    return sum(len(line.get("notes") or []) for line in group)
+
+
+def _keyboard_group(groups):
+    """A staff much busier than the others, and either very wide or switching into bass, is the piano."""
+    if len(groups) < 2:
+        return None
+    counts = [_group_count(group) for group in groups]
+    chosen = None
+    for index, group in enumerate(groups):
+        others = sorted(count for other, count in enumerate(counts) if other != index)
+        median = others[len(others) // 2]
+        if counts[index] < 3 * max(median, 1):
+            continue
+        pitches = [int(note["pitch"]) for line in group for note in (line.get("notes") or []) if "pitch" in note]
+        wide = bool(pitches) and min(pitches) < 48 and max(pitches) >= 60
+        changed = any(line.get("bass_clef_change") for line in group)
+        if not (wide or changed):
+            continue
+        if chosen is None or counts[index] > counts[chosen]:
+            chosen = index
+    return chosen
+
+
+def _place_group(voices, group, role):
+    """One staff group is one singer. A second layer stays with that singer, not the next part."""
+    primary = [line for line in group if line.get("layer", 0) == 0] or group[:1]
+    for line in primary:
+        voices[role] = list(voices[role]) + _sounding(line, role)
+    second = f"{role}2"
+    for line in group:
+        if line in primary:
+            continue
+        voices[second] = list(voices[second]) + _sounding(line, second)
+
+
 def assign_voices(lines, trust=False):
     other = [line for line in lines if _is_other(line["name"])]
     piano = [line for line in lines if line not in other and _is_accompaniment(line["name"])]
@@ -945,10 +1003,18 @@ def assign_voices(lines, trust=False):
                     continue
                 voices[f"{role}2"] = list(voices[f"{role}2"]) + _sounding(line, f"{role}2")
         pending = []
-    for role in VOICES:
-        if role in claimed or not pending:
-            continue
-        voices[role] = _sounding(pending.pop(0), role)
+    else:
+        keyboard = _keyboard_group(groups)
+        vocal_groups = []
+        for index, group in enumerate(groups):
+            if index == keyboard:
+                piano.extend(group)
+            else:
+                vocal_groups.append(group)
+        open_roles = [role for role in VOICES if role not in claimed]
+        for group, role in zip(vocal_groups, open_roles):
+            _place_group(voices, group, role)
+        pending = [line for group in vocal_groups[len(open_roles):] for line in group]
     piano_notes = [note for line in piano for note in line["notes"]]
     piano_notes.sort(key=lambda note: (note["start"], note["pitch"]))
     voices["P"] = piano_notes

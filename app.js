@@ -71,15 +71,6 @@ function displayName(voice, counts) {
   return voiceNames[voice];
 }
 
-function tidy(text) {
-  const parts = [];
-  for (const part of String(text).split('。')) {
-    const item = part.trim();
-    if (item && !parts.includes(item)) parts.push(item);
-  }
-  return parts.length ? `${parts.join('。')}。` : '';
-}
-
 function clock(seconds) {
   const whole = Math.max(0, Math.floor(Number.isFinite(seconds) ? seconds : 0));
   return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, '0')}`;
@@ -166,15 +157,10 @@ function paintTransport() {
   if (!dragging) $('seek').value = String(playing ? time : offset);
   $('now').textContent = clock(playing && !dragging ? time : offset);
   $('total').textContent = clock(total);
-  if (preparing) {
-    $('playerNote').textContent = renderedBpm && renderedBpm !== listenBpm
-      ? '正在按新速度准备…'
-      : '正在准备音频…';
-    return;
-  }
-  $('playerNote').textContent = anyNotes
-    ? '声部合在一起放。休拿掉一条，独可以同时点多条。空格键播放或暂停。'
-    : '识别之后，休把一条拿掉，独可以同时点多条。空格键播放或暂停。';
+  $('playerNote').hidden = !preparing;
+  $('playerNote').textContent = preparing
+    ? (renderedBpm && renderedBpm !== listenBpm ? '正在按新速度准备…' : '正在准备音频…')
+    : '';
 }
 
 function tick() {
@@ -310,7 +296,8 @@ function renderVoices() {
     bar.max = total;
     bar.value = Math.min(done, total);
   }
-  $('report').textContent = tidy(piece?.job?.message || piece?.report || '优先用 homr 读扫描谱，读不出再换 Audiveris。');
+  $('report').hidden = true;
+  $('report').textContent = '';
   for (const voice of voices) {
     const count = noteCount(voice);
     const hear = document.querySelector(`[data-hear="${voice}"]`);
@@ -330,6 +317,7 @@ function renderVoices() {
     save.disabled = !count;
   }
   const silent = !piece || !voices.some(voice => noteCount(voice));
+  $('tune').disabled = !piece || running;
   $('exportAll').disabled = silent;
   $('exportScore').disabled = silent;
   paintTransport();
@@ -369,7 +357,7 @@ function showHome() {
   $('work').hidden = true;
   $('home').hidden = false;
   history.replaceState(null, '', '/');
-  status('新建一份谱，或查看已经识别过的。');
+  status('');
   startStaff();
 }
 
@@ -411,7 +399,7 @@ function setPiece(next) {
     }, 2000);
   }
   if (next.job?.status === 'done') {
-    status('各声部已经生成，可以听，也可以导出。');
+    status('');
   } else if (next.job?.status === 'failed') {
     status(next.job.message, true);
   }
@@ -656,6 +644,17 @@ document.addEventListener('keydown', event => {
   event.preventDefault();
   togglePlay().catch(error => status(error.message, true));
 });
+$('tune').onclick = () => {
+  if (!piece) return;
+  window.open(`/tune?piece=${piece.id}`, `tune-${piece.id}`);
+};
+if ('BroadcastChannel' in window) {
+  const tuneChannel = new BroadcastChannel('choirian-tune');
+  tuneChannel.onmessage = event => {
+    if (!piece || event.data?.id !== piece.id) return;
+    api(`/api/pieces/${piece.id}`).then(setPiece).catch(error => status(error.message, true));
+  };
+}
 $('exportScore').onclick = async () => {
   try {
     const stem = (piece.name || 'score').replace(/\.[^.]+$/, '');

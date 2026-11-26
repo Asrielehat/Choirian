@@ -127,6 +127,16 @@ def stylesheet():
     return FileResponse(ROOT / "style.css", media_type="text/css", headers={"Cache-Control": "no-cache"})
 
 
+@app.get("/tune")
+def tune_page():
+    return FileResponse(ROOT / "tune.html", headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/tune.js")
+def tune_javascript():
+    return FileResponse(ROOT / "tune.js", media_type="application/javascript", headers={"Cache-Control": "no-cache"})
+
+
 app.mount("/fonts", StaticFiles(directory=ROOT / "fonts"), name="fonts")
 
 
@@ -192,7 +202,7 @@ def save_voice(piece_id: str, body: VoiceBody):
     folder = piece_dir(piece_id)
     piece = read_piece(folder)
     try:
-        update = score.update_piece(piece, body.bpm, body.beats_per_bar, body.bars, body.voice, body.notes)
+        update = score.replace_voice(piece, body.voice, body.notes)
     except ValueError as error:
         raise HTTPException(400, str(error)) from None
     write_piece(folder, update)

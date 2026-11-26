@@ -76,10 +76,13 @@
     <div class="job">
       <button type="button" id="recognize" disabled>识别并生成各声部</button>
       <progress id="recognizeProgress" hidden aria-label="识别进度"></progress>
-      <p id="report" class="hint">优先用 homr 读扫描谱，读不出再换 Audiveris。</p>
+      <p id="report" class="hint" hidden></p>
     </div>
     <div class="player" id="player">
-      <h2>听</h2>
+      <div class="player-title">
+        <h2>听</h2>
+        <button type="button" id="tune" class="quiet" disabled>微调</button>
+      </div>
       <div class="transport">
         <button type="button" id="play" disabled>播放</button>
         <button type="button" id="rewind" class="quiet" disabled>开头</button>
@@ -166,7 +169,7 @@
           <button type="button" class="quiet" data-save="P" disabled>导出</button>
         </div>
       </div>
-      <p id="playerNote" class="hint">识别之后，休把一条拿掉，独可以同时点多条。空格键播放或暂停。</p>
+      <p id="playerNote" class="hint" hidden></p>
       <div class="sheet-tools">
         <button type="button" id="exportScore" class="quiet" disabled>导出电子谱</button>
         <label class="pick">导入改过的谱<input id="importScore" class="file-input" type="file" accept=".xml,.musicxml,.mxl,application/vnd.recordare.musicxml+xml"></label>
@@ -176,7 +179,7 @@
   </section>
 </main>
 </div>
-<p id="status" role="status">新建一份谱，或查看已经识别过的。</p>
+<p id="status" role="status"></p>
 <script src="/app.js"></script>
 </body>
 </html>

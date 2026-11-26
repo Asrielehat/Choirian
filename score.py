@@ -61,6 +61,7 @@ def apply_recognition(piece, voices, bpm, beats_per_bar, report):
     piece["report"] = report
     piece["job"] = {"status": "done", "message": report}
     piece["tenor_sounding"] = True
+    piece["tuned"] = False
     return piece
 
 
@@ -101,7 +102,8 @@ def prepare_piece(piece):
             for note in voices[role]:
                 note["pitch"] = int(note["pitch"]) - 12
         piece["tenor_sounding"] = True
-    sing_together(voices)
+    if not piece.get("tuned"):
+        sing_together(voices)
     return piece
 
 
@@ -138,6 +140,105 @@ def clean_voice(notes, beats_per_bar, bars):
         if current["start"] < previous["start"] + previous["duration"] - 1e-6:
             raise ValueError("同一声部的音符重叠了")
     return cleaned
+
+
+def slices_from_input(value):
+    """Turn 1.5, 1/3, or 0.333 into an integer number of slices. One beat is 48."""
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            raise ValueError("时值无效")
+        if "/" in text:
+            left, right = text.split("/", 1)
+            try:
+                numerator = float(left)
+                denominator = float(right)
+            except ValueError:
+                raise ValueError("时值无效") from None
+            if denominator == 0:
+                raise ValueError("时值无效")
+            beats = numerator / denominator
+        else:
+            try:
+                beats = float(text)
+            except ValueError:
+                raise ValueError("时值无效") from None
+    elif isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("时值无效")
+    else:
+        beats = float(value)
+    if not math.isfinite(beats):
+        raise ValueError("时值无效")
+    return int(round(beats * _DIVISION))
+
+
+def _pair_key(earlier, later):
+    left = (earlier["start"], earlier["duration"])
+    right = (later["start"], later["duration"])
+    if right < left:
+        left, right = right, left
+    return left, right
+
+
+def _overlap_counts(cleaned):
+    """Count time overlaps. Pitch is ignored, so moving a note up or down is not a new clash."""
+    counts = {}
+    ordered = sorted(cleaned, key=lambda item: (item["start"], item["duration"]))
+    for index, earlier in enumerate(ordered):
+        end = earlier["start"] + earlier["duration"]
+        for later in ordered[index + 1:]:
+            if later["start"] >= end:
+                break
+            key = _pair_key(earlier, later)
+            counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def _quantize_notes(notes, limit):
+    if not isinstance(notes, list):
+        raise ValueError("音符列表无效")
+    if len(notes) > 4000:
+        raise ValueError("音符太多")
+    cleaned = []
+    for note in notes:
+        if not isinstance(note, dict):
+            raise ValueError("音符无效")
+        start = slices_from_input(note.get("start"))
+        duration = slices_from_input(note.get("duration"))
+        if start < 0 or duration < 1 or start + duration > limit:
+            raise ValueError("时值超出范围")
+        pitch = note.get("pitch")
+        if type(pitch) is not int or not 21 <= pitch <= 108:
+            raise ValueError("音高超出范围")
+        cleaned.append({"start": start, "duration": duration, "pitch": pitch})
+    return cleaned
+
+
+def replace_voice(piece, voice, notes):
+    """Store one voice on the 48-slice grid and stop copying the other voice into it."""
+    if voice not in PARTS:
+        raise ValueError("声部无效")
+    beats = piece.get("beats_per_bar") if piece.get("beats_per_bar") in (2, 3, 4, 6) else 4
+    limit = 400 * beats * _DIVISION
+    cleaned = _quantize_notes(notes, limit)
+    cleaned.sort(key=lambda item: (item["start"], item["pitch"]))
+    if voice != PIANO:
+        previous = _quantize_notes(piece["voices"].get(voice) or [], limit)
+        allowed = _overlap_counts(previous)
+        for key, count in _overlap_counts(cleaned).items():
+            if count > allowed.get(key, 0):
+                raise ValueError("同一声部的音符重叠了")
+    piece["voices"][voice] = [
+        {"start": item["start"] / _DIVISION, "duration": item["duration"] / _DIVISION, "pitch": item["pitch"]}
+        for item in cleaned
+    ]
+    end = 0
+    for role in PARTS:
+        for note in piece["voices"].get(role) or []:
+            end = max(end, slices_from_input(note["start"]) + slices_from_input(note["duration"]))
+    piece["bars"] = max(1, math.ceil(end / (beats * _DIVISION) - 1e-9))
+    piece["tuned"] = True
+    return piece
 
 
 def update_piece(piece, bpm, beats_per_bar, bars, voice, notes):
@@ -229,7 +330,7 @@ def render_zip(piece, bpm=None):
     return buffer.getvalue()
 
 
-_DIVISION = 10000
+_DIVISION = 48
 _NOTE_UNITS = (
     (192, "whole", 0, None),
     (144, "half", 1, None),
@@ -323,11 +424,15 @@ def _add_note(parent, atom, voice, staff, chord):
             ET.SubElement(note, "tie", {"type": kind})
     ET.SubElement(note, "voice").text = str(voice)
     appearance = _UNIT_BY_TICKS.get(atom["duration"])
-    if appearance is not None and appearance[2] is None:
-        kind, dots, _ratio = appearance
+    if appearance is not None:
+        kind, dots, ratio = appearance
         ET.SubElement(note, "type").text = kind
         for _ in range(dots):
             ET.SubElement(note, "dot")
+        if ratio is not None:
+            modification = ET.SubElement(note, "time-modification")
+            ET.SubElement(modification, "actual-notes").text = str(ratio[0])
+            ET.SubElement(modification, "normal-notes").text = str(ratio[1])
     if staff:
         ET.SubElement(note, "staff").text = str(staff)
     if atom["tie_start"] or atom["tie_stop"]:

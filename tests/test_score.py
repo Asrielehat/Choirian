@@ -192,6 +192,35 @@ class RecognizeTests(unittest.TestCase):
         self.assertEqual(voices["A"], [])
         self.assertEqual([note["pitch"] for note in voices["P"]], [48, 67])
 
+    def test_a_dense_wide_staff_becomes_piano_and_the_bass_stays(self):
+        def sung(pitches, layer=0):
+            return {
+                "name": "Voice",
+                "clef": "G",
+                "layer": layer,
+                "notes": [{"start": index, "duration": 1, "pitch": pitch} for index, pitch in enumerate(pitches)],
+            }
+
+        piano = [{"start": index, "duration": 1, "pitch": pitch} for index, pitch in enumerate(
+            [36, 48, 60, 72, 36, 48, 60, 72, 40, 52, 64, 76]
+        )]
+        voices, extra = recognize.assign_voices([
+            sung([72, 74]),
+            sung([67, 69]),
+            sung([64, 65, 67]),
+            sung([60, 62], layer=1),
+            sung([48, 50, 47]),
+            {"name": "Voice", "clef": "G", "layer": 0, "bass_clef_change": True, "notes": piano},
+        ])
+        self.assertEqual(extra, "")
+        self.assertEqual([note["pitch"] for note in voices["S"]], [72, 74])
+        self.assertEqual([note["pitch"] for note in voices["T"]], [52, 53, 55])
+        self.assertEqual([note["pitch"] for note in voices["B"]], [48, 50, 47])
+        self.assertIn(48, [note["pitch"] for note in voices["T2"]])
+        self.assertNotIn(47, [note["pitch"] for note in voices["T2"]])
+        self.assertIn(36, [note["pitch"] for note in voices["P"]])
+        self.assertIn(76, [note["pitch"] for note in voices["P"]])
+
 
 class MeterTests(unittest.TestCase):
     def test_meter_change_reaches_every_staff_and_the_next_page(self):
@@ -841,6 +870,109 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(client.get(f"/api/pieces/{piece['id']}").status_code, 404)
         listing = client.get("/api/pieces")
         self.assertNotIn(piece["id"], [row["id"] for row in listing.json()])
+
+
+class TuneTests(unittest.TestCase):
+    def test_decimals_and_fractions_land_on_the_same_slices(self):
+        self.assertEqual(score.slices_from_input(0.333), 16)
+        self.assertEqual(score.slices_from_input("0.3333333"), 16)
+        self.assertEqual(score.slices_from_input("1/3"), 16)
+        self.assertEqual(score.slices_from_input("0.33"), 16)
+        self.assertEqual(score.slices_from_input(1.5), 72)
+        self.assertEqual(score.slices_from_input("2/3"), 32)
+        self.assertEqual(score.slices_from_input(0.667), 32)
+        self.assertEqual(score.slices_from_input("0.4"), 19)
+        self.assertEqual(16 + 16 + 16, 48)
+
+    def test_three_triplets_fill_one_beat_and_the_other_voice_stays(self):
+        piece = score.new_piece("1" * 32, "三连.pdf", 1)
+        piece["voices"]["S"] = [
+            {"start": 0, "duration": 1, "pitch": 72},
+            {"start": 1, "duration": 1, "pitch": 74},
+        ]
+        piece["voices"]["S2"] = [{"start": 0, "duration": 1, "pitch": 67}]
+        score.prepare_piece(piece)
+        self.assertEqual([note["pitch"] for note in piece["voices"]["S2"]], [67, 74])
+        score.replace_voice(piece, "S2", [
+            {"start": 0, "duration": "1/3", "pitch": 64},
+            {"start": 0.333, "duration": 0.3333333, "pitch": 65},
+            {"start": "2/3", "duration": "1/3", "pitch": 66},
+        ])
+        self.assertEqual([note["pitch"] for note in piece["voices"]["S"]], [72, 74])
+        slices = [score.slices_from_input(note["duration"]) for note in piece["voices"]["S2"]]
+        self.assertEqual(slices, [16, 16, 16])
+        self.assertEqual(sum(slices), 48)
+        self.assertEqual([score.slices_from_input(note["start"]) for note in piece["voices"]["S2"]], [0, 16, 32])
+        score.prepare_piece(piece)
+        self.assertEqual([note["pitch"] for note in piece["voices"]["S2"]], [64, 65, 66])
+        self.assertTrue(piece["tuned"])
+
+    def test_one_voice_cannot_overlap_itself_but_divisi_can_share_a_beat(self):
+        piece = score.new_piece("2" * 32, "分声.pdf", 1)
+        piece["voices"]["S"] = [{"start": 0, "duration": 1, "pitch": 72}]
+        with self.assertRaises(ValueError):
+            score.replace_voice(piece, "S", [
+                {"start": 0, "duration": 1, "pitch": 72},
+                {"start": 0.5, "duration": 1, "pitch": 74},
+            ])
+        score.replace_voice(piece, "S2", [{"start": 0, "duration": 1, "pitch": 64}])
+        self.assertEqual(piece["voices"]["S"][0]["pitch"], 72)
+        self.assertEqual(piece["voices"]["S2"][0]["pitch"], 64)
+
+    def test_notes_already_overlapping_can_still_be_edited(self):
+        piece = score.new_piece("5" * 32, "重叠.pdf", 1)
+        piece["voices"]["S"] = [
+            {"start": 0, "duration": 2, "pitch": 72},
+            {"start": 1, "duration": 1, "pitch": 74},
+            {"start": 4, "duration": 1, "pitch": 76},
+        ]
+        score.replace_voice(piece, "S", [
+            {"start": 0, "duration": 2, "pitch": 73},
+            {"start": 1, "duration": 1, "pitch": 74},
+            {"start": 4, "duration": 1, "pitch": 77},
+            {"start": 6, "duration": 1, "pitch": 60},
+        ])
+        self.assertEqual([note["pitch"] for note in piece["voices"]["S"]], [73, 74, 77, 60])
+        with self.assertRaises(ValueError):
+            score.replace_voice(piece, "S", [
+                {"start": 0, "duration": 2, "pitch": 73},
+                {"start": 1, "duration": 1, "pitch": 74},
+                {"start": 4, "duration": 1, "pitch": 77},
+                {"start": 4.5, "duration": 1, "pitch": 79},
+                {"start": 6, "duration": 1, "pitch": 60},
+            ])
+
+    def test_piano_keeps_a_low_chord(self):
+        piece = score.new_piece("3" * 32, "钢琴.pdf", 1)
+        score.replace_voice(piece, "P", [
+            {"start": 0, "duration": 1.5, "pitch": 33},
+            {"start": 0, "duration": 1.5, "pitch": 48},
+        ])
+        self.assertEqual(sorted(note["pitch"] for note in piece["voices"]["P"]), [33, 48])
+        self.assertEqual(score.slices_from_input(piece["voices"]["P"][0]["duration"]), 72)
+
+    def test_saved_divisi_is_not_filled_again_on_read(self):
+        piece = score.new_piece("4" * 32, "再读.pdf", 1)
+        piece["voices"]["S"] = [
+            {"start": 0, "duration": 1, "pitch": 72},
+            {"start": 1, "duration": 1, "pitch": 74},
+        ]
+        piece["voices"]["S2"] = [{"start": 0, "duration": 1, "pitch": 67}]
+        folder = app.DATA / piece["id"]
+        folder.mkdir()
+        app.write_piece(folder, piece)
+        client = TestClient(app.app)
+        saved = client.put(
+            f"/api/pieces/{piece['id']}/voice",
+            json={"voice": "S2", "notes": [{"start": 0, "duration": 1, "pitch": 64}]},
+        )
+        self.assertEqual(saved.status_code, 200, saved.text)
+        again = client.get(f"/api/pieces/{piece['id']}")
+        self.assertEqual(again.status_code, 200, again.text)
+        body = again.json()
+        self.assertEqual([note["pitch"] for note in body["voices"]["S"]], [72, 74])
+        self.assertEqual(body["voices"]["S2"], [{"start": 0.0, "duration": 1.0, "pitch": 64}])
+        self.assertTrue(body["tuned"])
 
 
 if __name__ == "__main__":
