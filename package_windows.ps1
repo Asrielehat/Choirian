@@ -33,6 +33,8 @@ if ($LASTEXITCODE -ge 8) { throw "Could not copy fonts ($LASTEXITCODE)" }
 $runtime = Join-Path $stage "runtime"
 & robocopy $pythonBase $runtime /E /XD include libs tcl /NFL /NDL /NJH /NJS /nc /ns /np | Out-Null
 if ($LASTEXITCODE -ge 8) { throw "Could not copy Python ($LASTEXITCODE)" }
+$managed = Join-Path $runtime "Lib\EXTERNALLY-MANAGED"
+if (Test-Path $managed) { Remove-Item $managed -Force }
 & robocopy $homrSite (Join-Path $runtime "Lib\site-packages") /E /NFL /NDL /NJH /NJS /nc /ns /np | Out-Null
 if ($LASTEXITCODE -ge 8) { throw "Could not copy homr ($LASTEXITCODE)" }
 
