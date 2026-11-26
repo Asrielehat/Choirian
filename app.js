@@ -143,11 +143,23 @@ function position() {
   return offset + (context.currentTime - startedAt);
 }
 
+function syncRecognizeButton() {
+  const running = recognizing || piece?.job?.status === 'running';
+  const button = $('recognize');
+  const disabled = !piece || running || preparing;
+  const busy = running ? 'true' : 'false';
+  const label = running ? '正在识别…' : '识别并生成各声部';
+  if (button.disabled !== disabled) button.disabled = disabled;
+  if (button.getAttribute('aria-busy') !== busy) button.setAttribute('aria-busy', busy);
+  if (button.textContent !== label) button.textContent = label;
+}
+
 function paintTransport() {
   const total = duration();
   const time = Math.min(position(), total);
   const ready = total > 0;
   const anyNotes = voices.some(voice => noteCount(voice));
+  syncRecognizeButton();
   $('play').disabled = !anyNotes;
   $('play').textContent = playing ? '暂停' : '播放';
   $('play').classList.toggle('on', playing);
@@ -256,6 +268,7 @@ async function prepareAudio() {
     renderedBpm = bpm;
     offset = Math.max(0, heldBeat) * 60 / bpm;
     preparing = false;
+    syncRecognizeButton();
     if (resumeAfterTempo) {
       resumeAfterTempo = false;
       const ctx = ensureContext();
@@ -283,10 +296,7 @@ async function prepareAudio() {
 
 function renderVoices() {
   const running = recognizing || piece?.job?.status === 'running';
-  const button = $('recognize');
-  button.disabled = !piece || running;
-  button.setAttribute('aria-busy', running ? 'true' : 'false');
-  button.textContent = running ? '正在识别…' : '识别并生成各声部';
+  syncRecognizeButton();
   const bar = $('recognizeProgress');
   bar.hidden = !running;
   const total = Number(piece?.job?.total) || 0;
@@ -485,7 +495,7 @@ $('stage').ondrop = async event => {
 $('prev').onclick = () => { page -= 1; showPage(); };
 $('next').onclick = () => { page += 1; showPage(); };
 $('recognize').onclick = async () => {
-  if (!piece || recognizing || piece.job?.status === 'running') return;
+  if (!piece || recognizing || preparing || piece.job?.status === 'running') return;
   recognizing = true;
   renderVoices();
   $('recognize').blur();
