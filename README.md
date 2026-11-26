@@ -12,7 +12,7 @@ Windows 直接下载 [Releases](https://github.com/Asrielehat/Choirian/releases)
 
 ## 听和导出
 
-- 速度可以改到 24–168。播放和导出都按当前速度，音高不变。
+- 速度可以改到 24–168。播放和导出都按当前速度。
 - 「休」拿掉一条声部。「独」可以同时点亮多条，全部点掉后回到原来的合奏。
 - 可以导出单个声部、全部声部，以及一份 MusicXML。改过的 MusicXML 可以再导回来出声。
 
