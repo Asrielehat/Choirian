@@ -6,7 +6,7 @@
 
 ## 下载使用
 
-Windows 直接下载 [Releases](https://github.com/Asrielehat/Choirian/releases) 里的 `Choirian-windows.zip`。解压到一个文件夹，双击 `打开Choirian.bat`。压缩包里已经带好 homr 和模型，不用另装 Python，也不用再运行 `setup-homr.bat`。
+Windows 直接下载 [Releases](https://github.com/Asrielehat/Choirian/releases) 里的 `Choirian-windows.zip`。解压到一个文件夹，双击 `打开Choirian.bat`（文件名乱了就双击 `OpenChoirian.bat`）。压缩包里已经带好 homr 和模型，不用另装 Python，也不用再运行 `setup-homr.bat`。
 
 下面是从源码启动的办法。
 

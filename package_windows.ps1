@@ -21,7 +21,7 @@ New-Item -ItemType Directory -Path $zipDir -Force | Out-Null
 $names = @(
   "app.py", "app.js", "index.html", "style.css", "tune.html", "tune.js",
   "recognize.py", "score.py", "homr_keep.py", "run.py",
-  "打开Choirian.bat", "使用说明.txt", "README.md", "requirements.txt"
+  "打开Choirian.bat", "OpenChoirian.bat", "使用说明.txt", "README.md", "requirements.txt"
 )
 foreach ($name in $names) {
   Copy-Item (Join-Path $root $name) (Join-Path $stage $name)
