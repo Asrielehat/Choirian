@@ -51,3 +51,10 @@ homr 需要单独的 Python 3.12 环境。双击 `setup-homr.bat`，或：
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
+
+## 注意
+
+这是专精于合唱谱子的识别，普通的乐曲请直接到[homr](https://github.com/liebharc/homr)（AGPL-3.0）识别。
+而图片识别的和谱子写的乱七八糟，节奏乱搞，乱涂乱画，水印横飞的情况下就很难做到正确识别了。
+最理想的状态是SATB四个声部和钢琴平稳的走下去，没有诡异的中文描述和神奇的节奏（特指大三连音）。
+希望有所帮助
