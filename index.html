@@ -47,135 +47,47 @@
 <div id="work" hidden>
 <header>
   <div class="mast">
-    <button type="button" id="back" class="quiet">返回</button>
-    <div class="titles">
-      <p class="brand">Choirian</p>
-      <h1 id="pieceName">打开一份扫描谱</h1>
-    </div>
+    <button type="button" id="back">返回</button>
+    <h1 id="pieceName">打开一份扫描谱</h1>
   </div>
-  <div class="header-actions">
-    <label class="pick">重新上传<input id="fileAgain" class="file-input" type="file" accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg" multiple></label>
-  </div>
+  <label class="pick">换一份<input id="fileAgain" class="file-input" type="file" accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg" multiple></label>
 </header>
 <main>
   <section class="score" aria-label="原谱">
     <div class="stand">
+      <div id="stage" class="stage">
+        <p id="empty" class="empty">这一页还没有谱。</p>
+      </div>
       <div class="pager">
-        <h2>原谱</h2>
         <button type="button" id="prev" disabled>上一页</button>
         <span id="pageLabel">还没有谱</span>
         <button type="button" id="next" disabled>下一页</button>
       </div>
-      <div id="stage" class="stage">
-        <p id="empty" class="empty">这一页还没有谱。</p>
-        <img id="page" alt="乐谱页面" hidden>
-      </div>
     </div>
   </section>
-  <section class="desk" aria-label="声部">
-    <div class="job">
-      <button type="button" id="recognize" disabled>识别并生成各声部</button>
+  <section class="acts" aria-label="识谱">
+    <button type="button" id="recognize" class="act" disabled aria-label="识别">
+      <span class="act-staff" aria-hidden="true"></span>
+      <span class="act-word">识别</span>
+      <span class="act-note" id="recognizeNote" aria-hidden="true">读这一份</span>
+      <span class="act-rule" aria-hidden="true"></span>
       <progress id="recognizeProgress" hidden aria-label="识别进度"></progress>
-      <p id="report" class="hint" hidden></p>
-    </div>
-    <div class="player" id="player">
-      <div class="player-title">
-        <h2>听</h2>
-        <button type="button" id="tune" class="quiet" disabled>微调</button>
-      </div>
-      <div class="transport">
-        <button type="button" id="play" disabled>播放</button>
-        <button type="button" id="rewind" class="quiet" disabled>开头</button>
-        <span id="now">0:00</span>
-        <span id="total">0:00</span>
-        <label class="tempo">速度
-          <input id="tempo" type="number" min="24" max="168" value="72" step="1" inputmode="numeric" aria-label="速度">
-        </label>
-      </div>
-      <label class="seek">
-        <input id="seek" type="range" min="0" max="0" value="0" step="1" disabled aria-label="播放位置">
+    </button>
+    <button type="button" id="openMuseScore" class="act" disabled aria-label="用 MuseScore 打开">
+      <span class="act-word">MuseScore</span>
+      <span class="act-note" id="museNote" aria-hidden="true">先识别，再打开</span>
+      <span class="act-rule" aria-hidden="true"></span>
+    </button>
+    <div class="act-row">
+      <label class="act act-small" aria-label="导入改过的谱">
+        <span class="act-word">导入</span>
+        <span class="act-note" aria-hidden="true">改过的谱</span>
+        <input id="importScore" class="file-input" type="file" aria-label="导入改过的谱" accept=".xml,.musicxml,.mxl,application/vnd.recordare.musicxml+xml" disabled>
       </label>
-      <div class="lanes" id="voices">
-        <div class="lane">
-          <button type="button" class="hear" data-hear="S" aria-pressed="true" disabled><span class="markline"></span><span class="vname">女高</span><span class="vcount" data-count="S">0 个音</span></button>
-          <span class="lane-actions">
-            <button type="button" class="quiet tiny" data-rest="S" disabled aria-pressed="false">休</button>
-            <button type="button" class="quiet tiny" data-solo="S" disabled aria-pressed="false">独</button>
-          </span>
-          <button type="button" class="quiet" data-save="S" disabled>导出</button>
-        </div>
-        <div class="lane" hidden>
-          <button type="button" class="hear" data-hear="S2" aria-pressed="true" disabled><span class="markline"></span><span class="vname">女高二</span><span class="vcount" data-count="S2">0 个音</span></button>
-          <span class="lane-actions">
-            <button type="button" class="quiet tiny" data-rest="S2" disabled aria-pressed="false">休</button>
-            <button type="button" class="quiet tiny" data-solo="S2" disabled aria-pressed="false">独</button>
-          </span>
-          <button type="button" class="quiet" data-save="S2" disabled>导出</button>
-        </div>
-        <div class="lane">
-          <button type="button" class="hear" data-hear="A" aria-pressed="true" disabled><span class="markline"></span><span class="vname">女低</span><span class="vcount" data-count="A">0 个音</span></button>
-          <span class="lane-actions">
-            <button type="button" class="quiet tiny" data-rest="A" disabled aria-pressed="false">休</button>
-            <button type="button" class="quiet tiny" data-solo="A" disabled aria-pressed="false">独</button>
-          </span>
-          <button type="button" class="quiet" data-save="A" disabled>导出</button>
-        </div>
-        <div class="lane" hidden>
-          <button type="button" class="hear" data-hear="A2" aria-pressed="true" disabled><span class="markline"></span><span class="vname">女低二</span><span class="vcount" data-count="A2">0 个音</span></button>
-          <span class="lane-actions">
-            <button type="button" class="quiet tiny" data-rest="A2" disabled aria-pressed="false">休</button>
-            <button type="button" class="quiet tiny" data-solo="A2" disabled aria-pressed="false">独</button>
-          </span>
-          <button type="button" class="quiet" data-save="A2" disabled>导出</button>
-        </div>
-        <div class="lane">
-          <button type="button" class="hear" data-hear="T" aria-pressed="true" disabled><span class="markline"></span><span class="vname">男高</span><span class="vcount" data-count="T">0 个音</span></button>
-          <span class="lane-actions">
-            <button type="button" class="quiet tiny" data-rest="T" disabled aria-pressed="false">休</button>
-            <button type="button" class="quiet tiny" data-solo="T" disabled aria-pressed="false">独</button>
-          </span>
-          <button type="button" class="quiet" data-save="T" disabled>导出</button>
-        </div>
-        <div class="lane" hidden>
-          <button type="button" class="hear" data-hear="T2" aria-pressed="true" disabled><span class="markline"></span><span class="vname">男高二</span><span class="vcount" data-count="T2">0 个音</span></button>
-          <span class="lane-actions">
-            <button type="button" class="quiet tiny" data-rest="T2" disabled aria-pressed="false">休</button>
-            <button type="button" class="quiet tiny" data-solo="T2" disabled aria-pressed="false">独</button>
-          </span>
-          <button type="button" class="quiet" data-save="T2" disabled>导出</button>
-        </div>
-        <div class="lane">
-          <button type="button" class="hear" data-hear="B" aria-pressed="true" disabled><span class="markline"></span><span class="vname">男低</span><span class="vcount" data-count="B">0 个音</span></button>
-          <span class="lane-actions">
-            <button type="button" class="quiet tiny" data-rest="B" disabled aria-pressed="false">休</button>
-            <button type="button" class="quiet tiny" data-solo="B" disabled aria-pressed="false">独</button>
-          </span>
-          <button type="button" class="quiet" data-save="B" disabled>导出</button>
-        </div>
-        <div class="lane" hidden>
-          <button type="button" class="hear" data-hear="B2" aria-pressed="true" disabled><span class="markline"></span><span class="vname">男低二</span><span class="vcount" data-count="B2">0 个音</span></button>
-          <span class="lane-actions">
-            <button type="button" class="quiet tiny" data-rest="B2" disabled aria-pressed="false">休</button>
-            <button type="button" class="quiet tiny" data-solo="B2" disabled aria-pressed="false">独</button>
-          </span>
-          <button type="button" class="quiet" data-save="B2" disabled>导出</button>
-        </div>
-        <div class="lane">
-          <button type="button" class="hear" data-hear="P" aria-pressed="true" disabled><span class="markline"></span><span class="vname">钢琴</span><span class="vcount" data-count="P">0 个音</span></button>
-          <span class="lane-actions">
-            <button type="button" class="quiet tiny" data-rest="P" disabled aria-pressed="false">休</button>
-            <button type="button" class="quiet tiny" data-solo="P" disabled aria-pressed="false">独</button>
-          </span>
-          <button type="button" class="quiet" data-save="P" disabled>导出</button>
-        </div>
-      </div>
-      <p id="playerNote" class="hint" hidden></p>
-      <div class="sheet-tools">
-        <button type="button" id="exportScore" class="quiet" disabled>导出电子谱</button>
-        <button type="button" id="openMuseScore" class="quiet" disabled>用 MuseScore 打开</button>
-        <label class="pick">导入改过的谱<input id="importScore" class="file-input" type="file" accept=".xml,.musicxml,.mxl,application/vnd.recordare.musicxml+xml"></label>
-        <button type="button" id="exportAll" class="quiet" disabled>导出全部</button>
-      </div>
+      <button type="button" id="exportScore" class="act act-small" disabled aria-label="下载电子谱">
+        <span class="act-word">下载</span>
+        <span class="act-note" aria-hidden="true">电子谱</span>
+      </button>
     </div>
   </section>
 </main>

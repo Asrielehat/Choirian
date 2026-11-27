@@ -7,28 +7,7 @@ const divisiPartner = {S:'S2', A:'A2', T:'T2', B:'B2'};
 let piece = null;
 let page = 1;
 let pollTimer = null;
-let audioKey = '';
-let loadToken = 0;
-let context = null;
-let buffers = {};
-let gains = {};
-let sources = [];
-let heard = {S:true, S2:true, A:true, A2:true, T:true, T2:true, B:true, B2:true, P:true};
-let solos = new Set();
-let ensemble = null;
-let playing = false;
-let listenBpm = 72;
-let renderedBpm = 0;
-let heldBeat = 0;
-let prepareJob = null;
-let preparing = false;
 let recognizing = false;
-let tempoTimer = 0;
-let resumeAfterTempo = false;
-let offset = 0;
-let startedAt = 0;
-let dragging = false;
-let raf = 0;
 
 function status(text, bad = false) {
   $('status').textContent = text;
@@ -47,7 +26,13 @@ function showPage() {
   const total = Math.max(1, Number(piece.pages) || 1);
   page = Math.min(Math.max(1, page), total);
   $('empty').hidden = true;
-  const image = $('page');
+  let image = $('page');
+  if (!image) {
+    image = document.createElement('img');
+    image.id = 'page';
+    image.alt = '乐谱页面';
+    $('stage').appendChild(image);
+  }
   image.hidden = false;
   const mark = `${piece.id}:${page}`;
   if (image.dataset.page !== mark) {
@@ -71,267 +56,49 @@ function displayName(voice, counts) {
   return voiceNames[voice];
 }
 
-function clock(seconds) {
-  const whole = Math.max(0, Math.floor(Number.isFinite(seconds) ? seconds : 0));
-  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, '0')}`;
+function hasNotes(source = piece) {
+  return !!source && voices.some(voice => noteCount(voice, source));
 }
 
-function pieceAudioKey(source) {
-  const stamp = source.job?.status === 'running' ? 'running' : (source.updated || '');
-  return `${source.id}:${source.bpm}:${stamp}:${voices.map(voice => noteCount(voice, source)).join(',')}:${source.report || ''}`;
-}
-
-function duration() {
-  return Math.max(0, ...voices.map(voice => buffers[voice]?.duration || 0));
-}
-
-function ensureContext() {
-  if (!context) context = new AudioContext();
-  return context;
-}
-
-function stopSources() {
-  for (const source of sources) {
-    source.onended = null;
-    try { source.stop(); } catch { /* already stopped */ }
-  }
-  sources = [];
-  gains = {};
-}
-
-function dropAudio() {
-  cancelAnimationFrame(raf);
-  clearTimeout(tempoTimer);
-  stopSources();
-  buffers = {};
-  playing = false;
-  offset = 0;
-  dragging = false;
-  renderedBpm = 0;
-  heldBeat = 0;
-  resumeAfterTempo = false;
-  preparing = false;
-  loadToken += 1;
-}
-
-function syncBeat() {
-  const seconds = playing ? position() : offset;
-  const clock = playing ? (renderedBpm || listenBpm || 72) : (listenBpm || 72);
-  heldBeat = seconds * clock / 60;
-}
-
-function inMix(voice) {
-  return solos.size ? solos.has(voice) : !!heard[voice];
-}
-
-function level() {
-  const active = voices.filter(voice => inMix(voice) && buffers[voice]).length;
-  return active <= 1 ? 0.9 : 0.42;
-}
-
-function applyGains() {
-  if (!context) return;
-  const amount = level();
-  for (const voice of voices) {
-    if (!gains[voice]) continue;
-    gains[voice].gain.setTargetAtTime(inMix(voice) ? amount : 0, context.currentTime, 0.02);
-  }
-}
-
-function position() {
-  if (!playing || !context) return offset;
-  return offset + (context.currentTime - startedAt);
-}
-
-function syncRecognizeButton() {
+function renderDesk() {
   const running = recognizing || piece?.job?.status === 'running';
   const button = $('recognize');
-  const disabled = !piece || running || preparing;
-  const busy = running ? 'true' : 'false';
-  const label = running ? '正在识别…' : '识别并生成各声部';
-  if (button.disabled !== disabled) button.disabled = disabled;
-  if (button.getAttribute('aria-busy') !== busy) button.setAttribute('aria-busy', busy);
-  if (button.textContent !== label) button.textContent = label;
-}
-
-function paintTransport() {
-  const total = duration();
-  const time = Math.min(position(), total);
-  const ready = total > 0;
-  const anyNotes = voices.some(voice => noteCount(voice));
-  syncRecognizeButton();
-  $('play').disabled = !anyNotes;
-  $('play').textContent = playing ? '暂停' : '播放';
-  $('play').classList.toggle('on', playing);
-  $('rewind').disabled = !ready;
-  $('seek').disabled = !ready;
-  $('seek').max = String(total || 0);
-  if (!dragging) $('seek').value = String(playing ? time : offset);
-  $('now').textContent = clock(playing && !dragging ? time : offset);
-  $('total').textContent = clock(total);
-  $('playerNote').hidden = !preparing;
-  $('playerNote').textContent = preparing
-    ? (renderedBpm && renderedBpm !== listenBpm ? '正在按新速度准备…' : '正在准备音频…')
-    : '';
-}
-
-function tick() {
-  if (!playing) return;
-  const time = position();
-  if (time >= duration() - 0.05) {
-    stopSources();
-    playing = false;
-    offset = 0;
-    heldBeat = 0;
-    paintTransport();
-    return;
-  }
-  paintTransport();
-  raf = requestAnimationFrame(tick);
-}
-
-function playFrom(seconds) {
-  const ctx = ensureContext();
-  const total = duration();
-  if (!total) return;
-  stopSources();
-  offset = Math.min(Math.max(0, seconds), total);
-  if (offset >= total - 0.05) offset = 0;
-  startedAt = ctx.currentTime;
-  const amount = level();
-  for (const voice of voices) {
-    const buffer = buffers[voice];
-    if (!buffer || offset >= buffer.duration - 0.01) continue;
-    const source = ctx.createBufferSource();
-    const gain = ctx.createGain();
-    source.buffer = buffer;
-    source.playbackRate.value = 1;
-    gain.gain.value = inMix(voice) ? amount : 0;
-    source.connect(gain).connect(ctx.destination);
-    source.start(0, offset);
-    gains[voice] = gain;
-    sources.push(source);
-  }
-  if (!sources.length) {
-    playing = false;
-    paintTransport();
-    return;
-  }
-  playing = true;
-  cancelAnimationFrame(raf);
-  raf = requestAnimationFrame(tick);
-}
-
-async function togglePlay() {
-  if (!piece || !voices.some(voice => noteCount(voice))) return;
-  if (playing && renderedBpm === listenBpm) {
-    offset = position();
-    syncBeat();
-    stopSources();
-    playing = false;
-    resumeAfterTempo = false;
-    paintTransport();
-    return;
-  }
-  if (!duration() || renderedBpm !== listenBpm) {
-    resumeAfterTempo = true;
-    await prepareAudio();
-    return;
-  }
-  const ctx = ensureContext();
-  if (ctx.state === 'suspended') await ctx.resume();
-  playFrom(offset);
-}
-
-async function prepareAudio() {
-  if (!piece || !voices.some(voice => noteCount(voice))) {
-    preparing = false;
-    paintTransport();
-    return;
-  }
-  if (prepareJob && prepareJob.bpm === listenBpm) return prepareJob.promise;
-  const token = ++loadToken;
-  const bpm = listenBpm;
-  const id = piece.id;
-  preparing = true;
-  paintTransport();
-  const promise = (async () => {
-    const next = {};
-    await Promise.all(voices.map(async voice => {
-      if (!noteCount(voice)) return;
-      const response = await fetch(`/api/pieces/${id}/voices/${voice}.wav?bpm=${bpm}`);
-      if (!response.ok) throw new Error('音频没有准备好');
-      next[voice] = await ensureContext().decodeAudioData(await response.arrayBuffer());
-    }));
-    if (token !== loadToken || piece?.id !== id || listenBpm !== bpm) return;
-    buffers = next;
-    renderedBpm = bpm;
-    offset = Math.max(0, heldBeat) * 60 / bpm;
-    preparing = false;
-    syncRecognizeButton();
-    if (resumeAfterTempo) {
-      resumeAfterTempo = false;
-      const ctx = ensureContext();
-      if (ctx.state === 'suspended') await ctx.resume();
-      playFrom(offset);
-    } else {
-      paintTransport();
-    }
-  })();
-  const job = {bpm, promise};
-  prepareJob = job;
-  try {
-    await promise;
-  } catch (error) {
-    if (token === loadToken) {
-      preparing = false;
-      resumeAfterTempo = false;
-      paintTransport();
-    }
-    throw error;
-  } finally {
-    if (prepareJob === job) prepareJob = null;
-  }
-}
-
-function renderVoices() {
-  const running = recognizing || piece?.job?.status === 'running';
-  syncRecognizeButton();
-  const bar = $('recognizeProgress');
-  bar.hidden = !running;
+  const ready = !!piece && !running && hasNotes();
   const total = Number(piece?.job?.total) || 0;
   const done = Number(piece?.job?.done) || 0;
-  if (!running || total <= 0) bar.removeAttribute('value');
-  else {
+  const bar = $('recognizeProgress');
+  const note = $('recognizeNote');
+  button.disabled = !piece || running;
+  button.setAttribute('aria-busy', running ? 'true' : 'false');
+  if (running && total > 0) {
+    const read = Math.min(done, total);
+    bar.hidden = false;
     bar.max = total;
-    bar.value = Math.min(done, total);
+    bar.value = read;
+    button.style.setProperty('--read', String(read / total));
+    button.classList.add('has-progress');
+    note.textContent = `已读 ${read} / ${total} 页`;
+  } else if (running) {
+    bar.hidden = false;
+    bar.removeAttribute('value');
+    button.style.setProperty('--read', '0.2');
+    button.classList.remove('has-progress');
+    note.textContent = '正在读谱';
+  } else {
+    bar.hidden = true;
+    bar.removeAttribute('value');
+    button.style.removeProperty('--read');
+    button.classList.remove('has-progress');
+    note.textContent = hasNotes() ? '再读一次' : '读这一份';
   }
-  $('report').hidden = true;
-  $('report').textContent = '';
-  for (const voice of voices) {
-    const count = noteCount(voice);
-    const hear = document.querySelector(`[data-hear="${voice}"]`);
-    const save = document.querySelector(`[data-save="${voice}"]`);
-    const lane = hear.closest('.lane');
-    if (voice.endsWith('2')) lane.hidden = !count;
-    hear.querySelector('.vname').textContent = displayName(voice);
-    document.querySelector(`[data-count="${voice}"]`).textContent = `${count} 个音`;
-    hear.disabled = !count;
-    hear.setAttribute('aria-pressed', count && inMix(voice) ? 'true' : 'false');
-    const rest = document.querySelector(`[data-rest="${voice}"]`);
-    const alone = document.querySelector(`[data-solo="${voice}"]`);
-    rest.disabled = !count;
-    alone.disabled = !count;
-    rest.setAttribute('aria-pressed', count && !inMix(voice) ? 'true' : 'false');
-    alone.setAttribute('aria-pressed', solos.has(voice) ? 'true' : 'false');
-    save.disabled = !count;
-  }
-  const silent = !piece || !voices.some(voice => noteCount(voice));
-  $('tune').disabled = !piece || running;
-  $('exportAll').disabled = silent;
-  $('exportScore').disabled = silent;
-  $('openMuseScore').disabled = silent;
-  paintTransport();
+  $('openMuseScore').disabled = !ready;
+  $('exportScore').disabled = !ready;
+  $('museNote').textContent = ready ? '打开去改音' : '先识别，再打开';
+  const canImport = !!piece && !running;
+  $('importScore').disabled = !canImport;
+  $('importScore').closest('.act').classList.toggle('is-off', !canImport);
+  button.classList.toggle('next', !!piece && !running && !hasNotes());
+  $('openMuseScore').classList.toggle('next', ready);
 }
 
 function escapeText(value) {
@@ -358,11 +125,9 @@ function showLibrary(open) {
 }
 
 function showHome() {
-  dropAudio();
   recognizing = false;
   clearTimeout(pollTimer);
   piece = null;
-  audioKey = '';
   page = 1;
   showLibrary(false);
   $('work').hidden = true;
@@ -379,29 +144,15 @@ function showWork() {
 }
 
 function setPiece(next) {
-  const switched = piece?.id !== next.id;
   showWork();
   piece = next;
   $('pieceName').textContent = next.name;
-  if (switched) {
-    listenBpm = clampTempo(next.bpm || 72);
-    $('tempo').value = String(listenBpm);
-    heard = {S:true, S2:true, A:true, A2:true, T:true, T2:true, B:true, B2:true, P:true};
-    solos = new Set();
-    ensemble = null;
-  }
+  $('pieceName').title = next.name;
   page = Math.min(Math.max(page, 1), next.pages);
   recognizing = next.job?.status === 'running';
   history.replaceState(null, '', `/?piece=${next.id}`);
   showPage();
-  renderVoices();
-  const key = pieceAudioKey(next);
-  if (key !== audioKey) {
-    audioKey = key;
-    dropAudio();
-    renderVoices();
-    if (voices.some(voice => noteCount(voice))) prepareAudio().catch(error => status(error.message, true));
-  }
+  renderDesk();
   clearTimeout(pollTimer);
   if (next.job?.status === 'running') {
     pollTimer = setTimeout(async () => {
@@ -409,11 +160,8 @@ function setPiece(next) {
       catch (error) { status(error.message, true); }
     }, 2000);
   }
-  if (next.job?.status === 'done') {
-    status('');
-  } else if (next.job?.status === 'failed') {
-    status(next.job.message, true);
-  }
+  if (next.job?.status === 'done') status('');
+  else if (next.job?.status === 'failed') status(next.job.message, true);
 }
 
 async function refreshLibrary() {
@@ -430,7 +178,7 @@ async function openFiles(fileList) {
   page = 1;
   setPiece(await api('/api/pieces', {method:'POST', body:form}));
   await refreshLibrary();
-  status('谱放好了。点右边开始识别。');
+  status('谱放好了。点「识别」。');
 }
 
 async function download(url, filename) {
@@ -471,7 +219,12 @@ $('history').onclick = async event => {
   }
   const button = event.target.closest('[data-open]');
   if (!button) return;
-  try { page = 1; setPiece(await api(`/api/pieces/${button.dataset.open}`)); status('已打开。'); }
+  try {
+    page = 1;
+    setPiece(await api(`/api/pieces/${button.dataset.open}`));
+    if (piece.job?.status === 'running') status('正在读谱。这一步会久一点，请留在这个页面。');
+    else if (piece.job?.status !== 'failed') status(hasNotes() ? '已打开。可以进 MuseScore 改。' : '已打开。点「识别」。');
+  }
   catch (error) { status(error.message, true); }
 };
 $('home').ondragover = event => { event.preventDefault(); $('home').classList.add('over'); };
@@ -496,9 +249,9 @@ $('stage').ondrop = async event => {
 $('prev').onclick = () => { page -= 1; showPage(); };
 $('next').onclick = () => { page += 1; showPage(); };
 $('recognize').onclick = async () => {
-  if (!piece || recognizing || preparing || piece.job?.status === 'running') return;
+  if (!piece || recognizing || piece.job?.status === 'running') return;
   recognizing = true;
-  renderVoices();
+  renderDesk();
   $('recognize').blur();
   try {
     setPiece(await api(`/api/pieces/${piece.id}/recognize`, {method:'POST'}));
@@ -510,174 +263,42 @@ $('recognize').onclick = async () => {
       try { setPiece(await api(`/api/pieces/${piece.id}`)); }
       catch (pollError) {
         recognizing = false;
-        renderVoices();
+        renderDesk();
         status(pollError.message, true);
       }
       return;
     }
     recognizing = false;
-    renderVoices();
+    renderDesk();
     status(error.message, true);
   }
 };
-$('play').onclick = () => togglePlay().catch(error => status(error.message, true));
-$('rewind').onclick = () => {
-  heldBeat = 0;
-  offset = 0;
-  if (playing && renderedBpm === listenBpm) playFrom(0);
-  else paintTransport();
-};
-function clampTempo(value) {
-  const bpm = Math.round(Number(value));
-  if (!Number.isFinite(bpm)) return 72;
-  return Math.min(168, Math.max(24, bpm));
-}
-
-function scheduleTempo(bpm) {
-  if (bpm === listenBpm) return;
-  syncBeat();
-  const keep = playing || resumeAfterTempo;
-  listenBpm = bpm;
-  offset = heldBeat * 60 / bpm;
-  if (playing) {
-    stopSources();
-    playing = false;
-    cancelAnimationFrame(raf);
-  }
-  resumeAfterTempo = keep;
-  clearTimeout(tempoTimer);
-  if (renderedBpm === bpm && duration()) {
-    preparing = false;
-    loadToken += 1;
-    if (resumeAfterTempo) {
-      resumeAfterTempo = false;
-      const ctx = ensureContext();
-      const start = () => playFrom(offset);
-      if (ctx.state === 'suspended') ctx.resume().then(start).catch(error => status(error.message, true));
-      else start();
-    } else paintTransport();
-    return;
-  }
-  preparing = true;
-  paintTransport();
-  loadToken += 1;
-  if (!piece || !voices.some(voice => noteCount(voice))) {
-    resumeAfterTempo = false;
-    preparing = false;
-    paintTransport();
-    return;
-  }
-  tempoTimer = setTimeout(() => {
-    prepareAudio().catch(error => status(error.message, true));
-  }, 400);
-}
-
-$('tempo').addEventListener('input', () => {
-  const bpm = Number($('tempo').value);
-  if (!Number.isFinite(bpm) || bpm < 24 || bpm > 168) return;
-  scheduleTempo(bpm);
-});
-$('tempo').addEventListener('change', () => {
-  const bpm = clampTempo($('tempo').value);
-  $('tempo').value = String(bpm);
-  scheduleTempo(bpm);
-});
-$('seek').addEventListener('pointerdown', () => { dragging = true; });
-$('seek').addEventListener('input', () => {
-  offset = Number($('seek').value);
-  $('now').textContent = clock(offset);
-});
-$('seek').addEventListener('change', () => {
-  dragging = false;
-  offset = Number($('seek').value);
-  if (renderedBpm && renderedBpm === listenBpm) heldBeat = offset * renderedBpm / 60;
-  if (playing && renderedBpm === listenBpm) playFrom(offset);
-  else paintTransport();
-});
-function soloLabel() {
-  return voices.filter(voice => solos.has(voice)).map(displayName).join('、');
-}
-
-function restVoice(voice) {
-  if (solos.has(voice)) {
-    solos.delete(voice);
-    if (!solos.size) {
-      heard = {...ensemble};
-      ensemble = null;
-      heard[voice] = false;
-    }
-  } else if (solos.size) ensemble[voice] = !ensemble[voice];
-  else heard[voice] = !heard[voice];
-  applyGains();
-  renderVoices();
-  const name = displayName(voice);
-  status(inMix(voice) ? `${name}回到合奏。` : `${name}休止。`);
-}
-
-function soloVoice(voice) {
-  if (!solos.size) ensemble = {...heard};
-  if (solos.has(voice)) {
-    solos.delete(voice);
-    if (!solos.size) {
-      heard = {...ensemble};
-      ensemble = null;
-      status('回到合奏。');
-    } else status(`只听${soloLabel()}。`);
-  } else {
-    solos.add(voice);
-    status(`只听${soloLabel()}。`);
-  }
-  applyGains();
-  renderVoices();
-}
-
-$('voices').onclick = async event => {
-  const rest = event.target.closest('[data-rest]');
-  const alone = event.target.closest('[data-solo]');
-  const hear = event.target.closest('[data-hear]');
-  const save = event.target.closest('[data-save]');
-  try {
-    if (rest && !rest.disabled) restVoice(rest.dataset.rest);
-    else if (alone && !alone.disabled) soloVoice(alone.dataset.solo);
-    else if (hear && !hear.disabled) restVoice(hear.dataset.hear);
-    if (save) {
-      const voice = save.dataset.save;
-      await download(`/api/pieces/${piece.id}/voices/${voice}.wav?bpm=${listenBpm}`, `${voice}-${displayName(voice)}.wav`);
-      status(`${displayName(voice)}已导出。`);
-    }
-  } catch (error) { status(error.message, true); }
-};
 document.addEventListener('keydown', event => {
-  if (event.code !== 'Space' || event.repeat) return;
+  if ($('work').hidden || event.altKey || event.ctrlKey || event.metaKey || event.repeat) return;
   const tag = event.target.tagName;
   if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
-  if (tag === 'BUTTON' && event.target.id !== 'play') return;
-  event.preventDefault();
-  togglePlay().catch(error => status(error.message, true));
+  if (event.key === 'ArrowLeft' && !$('prev').disabled) {
+    event.preventDefault();
+    page -= 1;
+    showPage();
+  } else if (event.key === 'ArrowRight' && !$('next').disabled) {
+    event.preventDefault();
+    page += 1;
+    showPage();
+  }
 });
-$('tune').onclick = () => {
-  if (!piece) return;
-  window.open(`/tune?piece=${piece.id}`, `tune-${piece.id}`);
-};
-if ('BroadcastChannel' in window) {
-  const tuneChannel = new BroadcastChannel('choirian-tune');
-  tuneChannel.onmessage = event => {
-    if (!piece || event.data?.id !== piece.id) return;
-    api(`/api/pieces/${piece.id}`).then(setPiece).catch(error => status(error.message, true));
-  };
-}
 $('exportScore').onclick = async () => {
   try {
     const stem = (piece.name || 'score').replace(/\.[^.]+$/, '');
     await download(`/api/pieces/${piece.id}/score.musicxml`, `${stem}.musicxml`);
-    status('电子谱已下载。播放用的就是项目里的这份。');
+    status('电子谱已下载。');
   } catch (error) { status(error.message, true); }
 };
 $('openMuseScore').onclick = async () => {
   try {
     status('正在打开 MuseScore…');
     await api(`/api/pieces/${piece.id}/musescore`, {method: 'POST'});
-    status('已在 MuseScore 打开。改完后从 MuseScore 导出 MusicXML，再点「导入改过的谱」。');
+    status('已在 MuseScore 打开。改完后从 MuseScore 导出 MusicXML，再点「导入」。');
   } catch (error) { status(error.message, true); }
 };
 $('importScore').onchange = async () => {
@@ -689,13 +310,7 @@ $('importScore').onchange = async () => {
   try {
     status('正在读改过的谱…');
     setPiece(await api(`/api/pieces/${piece.id}/score`, {method:'POST', body:form}));
-    status('已导入电子谱，并按它出声。');
-  } catch (error) { status(error.message, true); }
-};
-$('exportAll').onclick = async () => {
-  try {
-    await download(`/api/pieces/${piece.id}/parts.zip?bpm=${listenBpm}`, 'fenbu-parts.zip');
-    status('各声部已打包。');
+    status('已导入电子谱。');
   } catch (error) { status(error.message, true); }
 };
 
@@ -940,6 +555,6 @@ document.addEventListener('visibilitychange', () => {
     const id = new URLSearchParams(location.search).get('piece');
     if (!id) return;
     setPiece(await api(`/api/pieces/${id}`));
-    if (piece.job?.status === 'idle') status('谱放好了。点右边开始识别。');
+    if (piece.job?.status === 'idle') status('谱放好了。点「识别」。');
   } catch (error) { status(error.message, true); }
 })();
