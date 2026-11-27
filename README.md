@@ -1,5 +1,7 @@
 # Choirian
 
+界面有两个版本。这一支是播放器版：识别之后可以听各声部、调速度。只做识别并送到 MuseScore 改谱的，用 [MuseScore 版](https://github.com/Asrielehat/Choirian/tree/musescore)。
+
 导入扫描的合唱 PDF 或照片，识别音符和节奏，按女高、女低、男高、男低生成钢琴 WAV。同一声部出现两个音时分成一声部和二声部；没分开的段落，两个声部一起唱。男高按实际音高低一个八度。谱里有钢琴时也会单独导出。
 
 识别使用开源项目 [homr](https://github.com/liebharc/homr)（AGPL-3.0）。它按页读图片，专门处理拍照和扫描谱。合唱识谱还会认错，音高、节奏和一二声部都还有需要改进的地方。
