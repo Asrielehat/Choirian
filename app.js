@@ -330,6 +330,7 @@ function renderVoices() {
   $('tune').disabled = !piece || running;
   $('exportAll').disabled = silent;
   $('exportScore').disabled = silent;
+  $('openMuseScore').disabled = silent;
   paintTransport();
 }
 
@@ -670,6 +671,13 @@ $('exportScore').onclick = async () => {
     const stem = (piece.name || 'score').replace(/\.[^.]+$/, '');
     await download(`/api/pieces/${piece.id}/score.musicxml`, `${stem}.musicxml`);
     status('电子谱已下载。播放用的就是项目里的这份。');
+  } catch (error) { status(error.message, true); }
+};
+$('openMuseScore').onclick = async () => {
+  try {
+    status('正在打开 MuseScore…');
+    await api(`/api/pieces/${piece.id}/musescore`, {method: 'POST'});
+    status('已在 MuseScore 打开。改完后从 MuseScore 导出 MusicXML，再点「导入改过的谱」。');
   } catch (error) { status(error.message, true); }
 };
 $('importScore').onchange = async () => {

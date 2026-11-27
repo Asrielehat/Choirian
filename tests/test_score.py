@@ -2,6 +2,7 @@ import io
 import os
 import tempfile
 import unittest
+import unittest.mock
 import wave
 import zipfile
 from pathlib import Path
@@ -386,7 +387,7 @@ class MeterTests(unittest.TestCase):
         self.assertEqual(voices["T"][1]["pitch"], 65)
         self.assertEqual([note["pitch"] for note in voices["T2"] if abs(note["start"] - 1) < 0.02], [53])
 
-    def test_the_top_line_f_stays_on_the_tenor_stem(self):
+    def test_the_higher_pitch_is_the_tenor_and_the_lower_is_the_second(self):
         folder = Path(tempfile.mkdtemp())
         path = folder / "tenor-f.musicxml"
         path.write_text("""<score-partwise><part-list>
@@ -412,9 +413,42 @@ class MeterTests(unittest.TestCase):
         voices, _ = recognize.assign_voices(recognize.read_score(path)["lines"])
         self.assertEqual(
             [(note["start"], note["pitch"]) for note in voices["T"]],
-            [(0.0, 60), (0.5, 53), (1.0, 55), (1.5, 53), (2.0, 55), (2.5, 65), (3.0, 55), (4.5, 55)],
+            [(0.0, 60), (0.5, 53), (1.0, 55), (1.5, 60), (2.0, 62), (2.5, 65), (3.0, 64), (4.5, 60)],
         )
+        self.assertEqual([note["pitch"] for note in voices["T2"] if note["start"] == 1.5], [53])
         self.assertEqual([note["pitch"] for note in voices["T2"] if note["start"] == 2.5], [53])
+        self.assertEqual([note["pitch"] for note in voices["T2"] if note["start"] == 3.0], [55])
+
+    def test_a_higher_second_voice_becomes_the_first_for_soprano_and_bass(self):
+        folder = Path(tempfile.mkdtemp())
+        path = folder / "above.musicxml"
+        path.write_text("""<score-partwise><part-list>
+<score-part id="P1"><part-name>Soprano</part-name></score-part>
+<score-part id="P2"><part-name>Bass</part-name></score-part>
+</part-list>
+<part id="P1"><measure number="1"><attributes><divisions>1</divisions><clef><sign>G</sign></clef></attributes>
+<note><pitch><step>F</step><octave>4</octave></pitch><duration>4</duration><voice>1</voice></note>
+<backup><duration>4</duration></backup>
+<note><pitch><step>A</step><octave>4</octave></pitch><duration>4</duration><voice>2</voice></note></measure>
+<measure number="2">
+<note><pitch><step>C</step><octave>5</octave></pitch><duration>4</duration><voice>1</voice></note>
+<backup><duration>4</duration></backup>
+<note><pitch><step>G</step><octave>4</octave></pitch><duration>4</duration><voice>2</voice></note></measure></part>
+<part id="P2"><measure number="1"><attributes><divisions>1</divisions><clef><sign>F</sign></clef></attributes>
+<note><pitch><step>G</step><octave>2</octave></pitch><duration>4</duration><voice>1</voice></note>
+<backup><duration>4</duration></backup>
+<note><pitch><step>F</step><octave>3</octave></pitch><duration>4</duration><voice>2</voice></note></measure>
+<measure number="2">
+<note><pitch><step>C</step><octave>3</octave></pitch><duration>4</duration><voice>1</voice></note>
+<backup><duration>4</duration></backup>
+<note><pitch><step>A</step><octave>2</octave></pitch><duration>4</duration><voice>2</voice></note></measure></part>
+</score-partwise>""", encoding="utf-8")
+        voices, extra = recognize.assign_voices(recognize.read_score(path)["lines"])
+        self.assertEqual([note["pitch"] for note in voices["S"]], [69, 72])
+        self.assertEqual([note["pitch"] for note in voices["S2"]], [65, 67])
+        self.assertEqual([note["pitch"] for note in voices["B"]], [53, 48])
+        self.assertEqual([note["pitch"] for note in voices["B2"]], [43, 45])
+        self.assertEqual(extra, "")
 
     def test_chord_on_a_shared_staff_splits_into_the_two_singers(self):
         folder = Path(tempfile.mkdtemp())
@@ -841,6 +875,46 @@ class ApiTests(unittest.TestCase):
         self.assertTrue(stored.is_file())
         self.assertIn("女高", stored.read_text(encoding="utf-8"))
         self.assertTrue((Path(os.environ["FENBU_DATA"]) / piece["id"] / "page-01.png").is_file())
+
+    def test_open_in_musescore_writes_the_score_and_starts_the_program(self):
+        client = TestClient(app.app)
+        with app.pymupdf.open() as document:
+            document.new_page().insert_text((72, 72), "fenbu")
+            pdf = document.tobytes()
+        created = client.post("/api/pieces", files=[("files", ("scan.pdf", pdf, "application/pdf"))])
+        piece = created.json()
+        saved = client.put(f"/api/pieces/{piece['id']}/voice", json={
+            "voice": "S", "bpm": 80, "beats_per_bar": 4, "bars": 1,
+            "notes": [{"start": 0, "duration": 1, "pitch": 72}],
+        })
+        self.assertEqual(saved.status_code, 200, saved.text)
+        program = Path(tempfile.mkdtemp()) / "MuseScore4.exe"
+        program.write_bytes(b"")
+        with unittest.mock.patch.dict(os.environ, {"MUSESCORE": str(program)}), \
+             unittest.mock.patch("app.subprocess.Popen") as popen:
+            opened = client.post(f"/api/pieces/{piece['id']}/musescore")
+        self.assertEqual(opened.status_code, 200, opened.text)
+        stored = Path(os.environ["FENBU_DATA"]) / piece["id"] / "score.musicxml"
+        self.assertIn("女高", stored.read_text(encoding="utf-8"))
+        command = popen.call_args.args[0]
+        self.assertEqual(command, [str(program), str(stored)])
+
+    def test_a_missing_musescore_explains_where_to_point(self):
+        client = TestClient(app.app)
+        with app.pymupdf.open() as document:
+            document.new_page().insert_text((72, 72), "fenbu")
+            pdf = document.tobytes()
+        created = client.post("/api/pieces", files=[("files", ("scan.pdf", pdf, "application/pdf"))])
+        piece = created.json()
+        client.put(f"/api/pieces/{piece['id']}/voice", json={
+            "voice": "S", "bpm": 72, "beats_per_bar": 4, "bars": 1,
+            "notes": [{"start": 0, "duration": 1, "pitch": 60}],
+        })
+        missing = Path(tempfile.mkdtemp()) / "missing.exe"
+        with unittest.mock.patch.dict(os.environ, {"MUSESCORE": str(missing)}):
+            opened = client.post(f"/api/pieces/{piece['id']}/musescore")
+        self.assertEqual(opened.status_code, 409, opened.text)
+        self.assertIn("MUSESCORE", opened.json()["detail"])
 
     def test_bpm_thirty_renders_and_delete_removes_the_piece(self):
         client = TestClient(app.app)

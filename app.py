@@ -4,6 +4,7 @@ import mimetypes
 import os
 import re
 import shutil
+import subprocess
 import threading
 import time
 import uuid
@@ -317,6 +318,113 @@ def start_recognize(piece_id: str):
     return piece
 
 
+def musescore_program():
+    """Find a local MuseScore. Set MUSESCORE to the .exe when it lives somewhere else."""
+    configured = os.environ.get("MUSESCORE", "").strip().strip('"')
+    if configured:
+        path = Path(configured)
+        if path.is_file():
+            return path
+        raise HTTPException(409, "环境变量 MUSESCORE 指向的程序不存在")
+    names = ("MuseScore4.exe", "MuseScoreStudio.exe", "MuseScore4", "MuseScoreStudio", "MuseScore3.exe", "MuseScore3", "mscore.exe", "mscore")
+    found = [Path(match) for name in names if (match := shutil.which(name))]
+    found.extend(_installed_musescore())
+    found.extend(_registered_musescore())
+    unique = []
+    seen = set()
+    for path in found:
+        key = str(path).lower()
+        if key in seen or not path.is_file():
+            continue
+        seen.add(key)
+        unique.append(path)
+    unique.sort(key=lambda path: (0 if "musescore4" in path.name.lower() else 1, str(path).lower()))
+    return unique[0] if unique else None
+
+
+def _installed_musescore():
+    roots = (
+        os.environ.get("ProgramFiles", ""),
+        os.environ.get("ProgramFiles(x86)", ""),
+        os.environ.get("LOCALAPPDATA", ""),
+    )
+    relative = (
+        Path("MuseScore 4") / "bin" / "MuseScore4.exe",
+        Path("MuseScore Studio") / "bin" / "MuseScoreStudio.exe",
+        Path("MuseScore Studio") / "bin" / "MuseScore4.exe",
+        Path("MuseScore 3") / "bin" / "MuseScore3.exe",
+        Path("Programs") / "MuseScore 4" / "bin" / "MuseScore4.exe",
+        Path("Programs") / "MuseScore Studio" / "bin" / "MuseScoreStudio.exe",
+        Path("Programs") / "MuseScore Studio" / "bin" / "MuseScore4.exe",
+        Path("Programs") / "MuseScore 3" / "bin" / "MuseScore3.exe",
+    )
+    return [Path(root) / item for root in roots if root for item in relative]
+
+
+def _registered_musescore():
+    if os.name != "nt":
+        return []
+    import winreg
+
+    found = []
+    app_paths = r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths"
+    for name in ("MuseScore4.exe", "MuseScoreStudio.exe", "MuseScore3.exe"):
+        try:
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, rf"{app_paths}\{name}") as key:
+                raw, _ = winreg.QueryValueEx(key, "")
+        except OSError:
+            continue
+        found.append(Path(str(raw).strip('"')))
+    uninstall = (
+        (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
+    )
+    for hive, key_path in uninstall:
+        try:
+            root = winreg.OpenKey(hive, key_path)
+        except OSError:
+            continue
+        with root:
+            for index in range(winreg.QueryInfoKey(root)[0]):
+                try:
+                    sub = winreg.OpenKey(root, winreg.EnumKey(root, index))
+                except OSError:
+                    continue
+                with sub:
+                    try:
+                        display, _ = winreg.QueryValueEx(sub, "DisplayName")
+                    except OSError:
+                        display = ""
+                    if "musescore" not in str(display).lower():
+                        continue
+                    for value_name in ("DisplayIcon", "InstallLocation"):
+                        try:
+                            raw, _ = winreg.QueryValueEx(sub, value_name)
+                        except OSError:
+                            continue
+                        candidate = Path(str(raw).split(",")[0].strip().strip('"'))
+                        if candidate.suffix.lower() == ".exe":
+                            found.append(candidate)
+                        elif candidate.is_dir():
+                            for exe_name in ("MuseScore4.exe", "MuseScoreStudio.exe", "MuseScore3.exe"):
+                                found.append(candidate / "bin" / exe_name)
+                                found.append(candidate / exe_name)
+    return found
+
+
+def launch_musescore(program, path):
+    kwargs = {
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+        "close_fds": True,
+    }
+    if os.name == "nt":
+        kwargs["creationflags"] = subprocess.DETACHED_PROCESS
+    subprocess.Popen([str(program), str(path)], **kwargs)
+
+
 @app.get("/api/pieces/{piece_id}/score.musicxml")
 def export_score(piece_id: str):
     piece = read_piece(piece_dir(piece_id))
@@ -327,6 +435,24 @@ def export_score(piece_id: str):
     filename = score.musicxml_name(piece["name"])
     disposition = f"attachment; filename=\"score.musicxml\"; filename*=UTF-8''{quote(filename)}"
     return Response(raw, media_type="application/vnd.recordare.musicxml+xml", headers={"Content-Disposition": disposition})
+
+
+@app.post("/api/pieces/{piece_id}/musescore")
+def open_musescore(piece_id: str):
+    """Write the current score and open it in the local MuseScore."""
+    folder = piece_dir(piece_id)
+    piece = read_piece(folder)
+    program = musescore_program()
+    if program is None:
+        raise HTTPException(409, "没有找到 MuseScore。安装 MuseScore 4 后再试，或把程序路径写到环境变量 MUSESCORE。")
+    try:
+        xml = score.write_musicxml(piece)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from None
+    path = folder / "score.musicxml"
+    path.write_text(xml, encoding="utf-8")
+    launch_musescore(program, path)
+    return {"opened": True, "path": str(path)}
 
 
 @app.post("/api/pieces/{piece_id}/score")

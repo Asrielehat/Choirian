@@ -602,19 +602,27 @@ def _staff_lines(grouped, label, clef, octave_shift=0, bass_clef_change=False):
 
 
 def _lead(notes):
-    """The note on the stem stays with the first voice. A chord that has no stem note keeps the top one."""
-    stems = [note for note in notes if not note.get("chord")]
-    if len(stems) == 1:
-        return stems[0]
+    """The higher pitch is the first voice."""
     return max(notes, key=lambda note: note["pitch"])
+
+
+def _pitches_once(notes):
+    """One note per pitch. The same pitch written twice is one note."""
+    ordered = sorted(notes, key=lambda note: note["pitch"])
+    unique = []
+    for note in ordered:
+        if unique and unique[-1]["pitch"] == note["pitch"]:
+            continue
+        unique.append(note)
+    return unique
 
 
 def _split_sung(notes):
     """Enough stacked noteheads on one staff are the two singers there.
 
-    The note on the stem stays on the upper line. Every other pitch stays on the
-    lower line, so a three-note stack keeps the middle pitch with the top when the
-    top is the stem. One stack, or a rare one, stays together and is divided later.
+    The higher pitch stays on the upper line. Every lower pitch stays on the
+    lower line, so a three-note stack keeps only the top pitch above. One stack,
+    or a rare one, stays together and is divided later.
     """
     by_start = {}
     for note in notes:
@@ -627,12 +635,7 @@ def _split_sung(notes):
         return notes, []
     upper, lower = [], []
     for start in sorted(by_start):
-        ordered = sorted(by_start[start], key=lambda note: note["pitch"])
-        unique = []
-        for note in ordered:
-            if unique and unique[-1]["pitch"] == note["pitch"]:
-                continue
-            unique.append(note)
+        unique = _pitches_once(by_start[start])
         lead = _lead(unique)
         upper.append({key: lead[key] for key in ("start", "duration", "pitch")})
         for note in unique:
@@ -871,29 +874,39 @@ def _sounding(line, role):
 def _split_divisi(voices):
     """Two pitches at one moment inside a part are its first and second voices.
 
-    The note on the stem stays. Every other pitch goes to the second voice and still
-    sounds. A chord with no stem note keeps the top one. The same pitch written twice stays one note.
+    The higher pitch stays with the first voice. Every lower pitch goes to the
+    second voice and still sounds. A note that stands alone stays on the voice
+    where it was written. The same pitch written twice stays one note.
     """
     for role in VOICES:
+        second = f"{role}2"
         grouped = {}
         for note in voices[role]:
-            grouped.setdefault(note["start"], []).append(note)
+            grouped.setdefault(note["start"], {"first": [], "second": []})["first"].append(note)
+        for note in voices[second]:
+            grouped.setdefault(note["start"], {"first": [], "second": []})["second"].append(note)
         kept = []
         extra = []
         for start in sorted(grouped):
-            ordered = sorted(grouped[start], key=lambda note: note["pitch"])
-            unique = []
-            for note in ordered:
-                if unique and unique[-1]["pitch"] == note["pitch"]:
-                    continue
-                unique.append(note)
-            lead = _lead(unique)
-            kept.append(lead)
-            extra.extend(note for note in unique if note is not lead)
+            first = _pitches_once(grouped[start]["first"])
+            lower = _pitches_once(grouped[start]["second"])
+            if first and lower:
+                pooled = _pitches_once(first + lower)
+                if len(pooled) == 1:
+                    kept.append(pooled[0])
+                else:
+                    lead = _lead(pooled)
+                    kept.append(lead)
+                    extra.extend(note for note in pooled if note is not lead)
+            elif len(first) >= 2:
+                lead = _lead(first)
+                kept.append(lead)
+                extra.extend(note for note in first if note is not lead)
+            else:
+                kept.extend(first)
+                extra.extend(lower)
         voices[role] = kept
-        if extra:
-            voices[f"{role}2"].extend(extra)
-            voices[f"{role}2"].sort(key=lambda note: (note["start"], note["pitch"]))
+        voices[second] = extra
 
 
 def _group_count(group):
