@@ -6,7 +6,7 @@
 
 ## 改谱
 
-改音符请用 [MuseScore](https://musescore.org)（推荐 MuseScore 4）。在 Choirian 里点「用 MuseScore 打开」，改完音高和节奏后，从 MuseScore 导出 MusicXML，再回到这里点「导入改过的谱」。程序不在默认位置时，把路径写到环境变量 `MUSESCORE`。
+改音符请用 [MuseScore](https://musescore.org)（推荐 MuseScore 4）。在 Choirian 里点「用 MuseScore 打开」，修改音高和节奏。程序不在默认位置时，把路径写到环境变量 `MUSESCORE`。
 
 ## 下载使用
 
@@ -49,3 +49,11 @@ homr 需要单独的 Python 3.12 环境。双击 `setup-homr.bat`，或：
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
+
+## 注意
+
+这是专精于合唱谱子的识别，普通的乐曲请直接到[homr](https://github.com/liebharc/homr)（AGPL-3.0）识别。
+而图片识别的和谱子写的乱七八糟，节奏乱搞，乱涂乱画，水印横飞的情况下就很难做到正确识别了。
+最理想的状态是SATB四个声部和钢琴平稳的走下去，没有诡异的中文描述和神奇的节奏（特指大三连音）。
+希望有所帮助
+
