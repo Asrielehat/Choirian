@@ -283,21 +283,15 @@ button.quiet:not(:disabled):hover,
 .pager button:last-child { justify-self: end; }
 .pager button:not(:disabled):hover { color: var(--mark); border-bottom-color: var(--mark); }
 .stage {
-  flex: 1;
+  position: relative;
+  min-width: 0;
   min-height: 0;
   display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  justify-content: flex-start;
-  overflow: auto;
-  padding: 12px 16px 8px;
-  scrollbar-color: color-mix(in srgb, var(--ink) 35%, transparent) transparent;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  padding: 8px 12px;
 }
-.stage::-webkit-scrollbar { width: 10px; }
-.stage::-webkit-scrollbar-thumb {
-  background: color-mix(in srgb, var(--ink) 35%, transparent);
-}
-.stage:has(#empty:not([hidden])) { justify-content: center; }
 .empty {
   color: var(--ink);
   text-align: center;
@@ -321,10 +315,13 @@ button.quiet:not(:disabled):hover,
     linear-gradient(var(--staff-line), var(--staff-line)) 0 64px / 100% 1px no-repeat;
 }
 #page {
-  width: 100%;
-  height: auto;
+  position: absolute;
+  inset: 8px 12px;
+  width: calc(100% - 24px);
+  height: calc(100% - 16px);
+  object-fit: contain;
+  object-position: center;
   display: block;
-  box-shadow: 0 18px 36px color-mix(in srgb, var(--ink) 22%, transparent);
 }
 .stage.over { outline: 2px solid var(--mark); outline-offset: -10px; }
 
